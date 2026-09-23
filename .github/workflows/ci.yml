@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: release
+            build_type: Release
+            flags: ""
+            targets: ""
+          - name: asan-ubsan
+            build_type: RelWithDebInfo
+            flags: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+            targets: "--target citygen_tests"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build python3-jinja2 libglfw3-dev libgl-dev
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+
+      - name: Build
+        run: cmake --build build ${{ matrix.targets }}
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 600

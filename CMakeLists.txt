@@ -84,3 +84,20 @@ target_compile_options(crowd_sim PRIVATE ${WARNINGS})
 add_executable(map_preview tools/map_preview.cpp)
 target_link_libraries(map_preview PRIVATE citygen)
 target_compile_options(map_preview PRIVATE ${WARNINGS})
+
+option(BUILD_TESTING "Build unit tests" ON)
+if(BUILD_TESTING)
+  enable_testing()
+  FetchContent_Declare(Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.7.1
+    GIT_SHALLOW    TRUE)
+  FetchContent_MakeAvailable(Catch2)
+  list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+  include(Catch)
+
+  add_executable(citygen_tests tests/math_test.cpp tests/citygen_test.cpp)
+  target_link_libraries(citygen_tests PRIVATE citygen Catch2::Catch2WithMain)
+  target_compile_options(citygen_tests PRIVATE ${WARNINGS})
+  catch_discover_tests(citygen_tests)
+endif()
