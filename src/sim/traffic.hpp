@@ -29,7 +29,7 @@ public:
     void step(uint32_t nowMs, float dtS, bool advance, bool emit, bool collect, const Camera& cam, int fbW, int fbH,
               GLuint stride);
     void draw(const Camera& cam, int fbW, int fbH) const;
-    void setLaneStats(bool on) { glProgramUniform1ui(move_, 33, on ? 1u : 0u); }
+    void setLaneStats(bool on) { glProgramUniform1ui(move_, TRAFFIC_LOC_LANE_STATS, on ? 1u : 0u); }
     void drawCongestion(const Camera& cam, int fbW, int fbH, float opacity) const;
     void destroy();
 
@@ -39,7 +39,7 @@ public:
     GLuint   carLaneBuffer() const { return carLane_; }
     GLuint   visibleBuffer() const { return visible_; }
     uint32_t visibleCapacity() const { return capacity_; }
-    void     setSelectedCar(uint32_t car) { glProgramUniform1ui(move_, 32, car); }
+    void     setSelectedCar(uint32_t car) { glProgramUniform1ui(move_, TRAFFIC_LOC_SELECTED_CAR, car); }
     CarRaw   readCar(uint32_t car) const;                                           // stalls: use rarely
     GLuint   carRouteBuffer() const { return carRoute_; }
     uint32_t carCount() const { return carCount_; }

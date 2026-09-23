@@ -8,20 +8,23 @@
 
 namespace {
 
-constexpr GLuint kLocalSize     = 256; // must match agents.comp
-constexpr GLuint kCullPerThread = 4;   // must match kPerThread in agents.comp
+constexpr GLuint kLocalSize     = LOCAL_SIZE;
+constexpr GLuint kCullPerThread = CULL_PER_THREAD;
 constexpr GLuint kMaxVisible  = 4'000'000;
 
 enum SimLoc : GLint {
-    kMode = 0, kCount, kNow, kDayOffsetLoc, kSeed, kCollectStats, kView, kStride, kCapacity, kCounts, kSec,
-    kTrainCap = 22
+    kMode = AGENTS_LOC_MODE, kCount = AGENTS_LOC_COUNT, kNow = AGENTS_LOC_NOW, kDayOffsetLoc = AGENTS_LOC_DAY_OFFSET,
+    kSeed = AGENTS_LOC_SEED, kCollectStats = AGENTS_LOC_COLLECT_STATS, kView = AGENTS_LOC_VIEW,
+    kStride = AGENTS_LOC_STRIDE, kCapacity = AGENTS_LOC_CAPACITY,
+    kCounts = LOC_COUNTS, kSec = LOC_SEC, kTrainCap = AGENTS_LOC_TRAIN_CAP
 };
 enum DrawLoc : GLint { kCenter = 0, kScale, kPointSize, kPpm, kDrawCapacity };
 enum TrainLoc : GLint {
-    kTCenter = 0, kTScale, kTPpm, kTDayOffset, kTNow, kTTrainCap, kTCounts = 9, kTSec = 10, kTLineColor = 23
+    kTCenter = TRAINS_LOC_CENTER, kTScale = TRAINS_LOC_SCALE, kTPpm = TRAINS_LOC_PPM,
+    kTDayOffset = TRAINS_LOC_DAY_OFFSET, kTNow = TRAINS_LOC_NOW, kTTrainCap = TRAINS_LOC_TRAIN_CAP,
+    kTCounts = LOC_COUNTS, kTSec = LOC_SEC,
+    kTLineColor = TRAINS_LOC_LINE_COLOR
 };
-
-static_assert(int(kCounts) == int(kTCounts) && int(kSec) == int(kTSec), "shared uniform locations");
 
 constexpr uint32_t kDayMs = 24u * 3600u * 1000u;
 constexpr uint32_t kResetAt = 3u * 3600u * 1000u; // 03:00
@@ -56,14 +59,14 @@ void Agents::init(const std::string& shaderDir) {
     glVertexArrayBindingDivisor(trainVao_, 0, 1);
     glEnableVertexArrayAttrib(trainVao_, 0);
 
-    float colors[27];
-    for (int i = 0; i < 9; ++i) {
+    float colors[3 * TRAIN_LINE_COLORS];
+    for (int i = 0; i < TRAIN_LINE_COLORS; ++i) {
         const uint32_t c = palette::kRail[i % palette::kRailCount];
         colors[i * 3 + 0] = float((c >> 16) & 0xFFu) / 255.0f;
         colors[i * 3 + 1] = float((c >> 8) & 0xFFu) / 255.0f;
         colors[i * 3 + 2] = float(c & 0xFFu) / 255.0f;
     }
-    glProgramUniform3fv(trainProg_, kTLineColor, 9, colors);
+    glProgramUniform3fv(trainProg_, kTLineColor, TRAIN_LINE_COLORS, colors);
     glProgramUniform1ui(trainProg_, kTDayOffset, kDayOffset);
 }
 
@@ -77,7 +80,7 @@ void Agents::setWorld(const CityMap& map) {
                             world_.lineCount);
         glProgramUniform1uiv(prog, kSec, kSectionCount, world_.sec.data());
     }
-    glProgramUniform3ui(sim_, 28, world_.workByPay[0], world_.workByPay[1], world_.workByPay[2]);
+    glProgramUniform3ui(sim_, AGENTS_LOC_WORK_BY_PAY, world_.workByPay[0], world_.workByPay[1], world_.workByPay[2]);
 
     deleteBuffer(occupancy_);
     occupancy_ = makeBuffer(GLsizeiptr(std::max<uint32_t>(world_.occupancyCount, 1)) * 4, nullptr);

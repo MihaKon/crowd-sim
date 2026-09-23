@@ -1,4 +1,5 @@
 #version 460
+#include "gpu_layout.h"
 // One instance per train slot; 6 vertices form a rectangle along the track.
 
 layout(std430, binding = 3) readonly buffer World     { uint W[]; };
@@ -6,15 +7,15 @@ layout(std430, binding = 6) readonly buffer Occupancy { uint occupancy[]; };
 
 layout(location = 0) in uvec2 aSlot; // line direction, slot
 
-layout(location = 0)  uniform vec2  uCenter;
-layout(location = 1)  uniform vec2  uScale; // 2 * ppm / viewport
-layout(location = 2)  uniform float uPpm;
-layout(location = 3)  uniform uint  uDayOffset;
-layout(location = 4)  uniform uint  uNow;
-layout(location = 5)  uniform uint  uTrainCap;
-layout(location = 9)  uniform uvec4 uCounts;
-layout(location = 10) uniform uint  uSec[12];
-layout(location = 23) uniform vec3  uLineColor[9];
+layout(location = TRAINS_LOC_CENTER)     uniform vec2  uCenter;
+layout(location = TRAINS_LOC_SCALE)      uniform vec2  uScale; // 2 * ppm / viewport
+layout(location = TRAINS_LOC_PPM)        uniform float uPpm;
+layout(location = TRAINS_LOC_DAY_OFFSET) uniform uint  uDayOffset;
+layout(location = TRAINS_LOC_NOW)        uniform uint  uNow;
+layout(location = TRAINS_LOC_TRAIN_CAP) uniform uint  uTrainCap;
+layout(location = LOC_COUNTS) uniform uvec4 uCounts;
+layout(location = LOC_SEC)    uniform uint  uSec[SECTION_COUNT];
+layout(location = TRAINS_LOC_LINE_COLOR) uniform vec3 uLineColor[TRAIN_LINE_COLORS];
 
 out float      vAlong; // 0 = rear, 1 = front
 flat out float vLoad;
@@ -50,5 +51,5 @@ void main() {
     gl_Position = vec4((world - uCenter) * uScale, 0.0, 1.0);
     vAlong      = c.x + 0.5;
     vLoad       = clamp(float(occupancy[trip]) / float(uTrainCap), 0.0, 1.0);
-    vColor      = uLineColor[line % 9u];
+    vColor      = uLineColor[line % uint(TRAIN_LINE_COLORS)];
 }

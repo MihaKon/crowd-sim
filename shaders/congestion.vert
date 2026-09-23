@@ -1,4 +1,5 @@
 #version 460
+#include "gpu_layout.h"
 // Traffic layer: every lane with cars as a line coloured by how jammed it is
 // (laneStat, written by traffic.comp). Both directions side by side; lines
 // keep a minimum width in pixels so the pattern reads at city scale.
@@ -29,7 +30,7 @@ vec2 node(uint n) {
 void main() {
     uint  l   = uint(gl_VertexID) / 6u;
     uint  st  = laneStat[l];
-    uint  o   = uLaneSec + 8u * l;
+    uint  o   = uLaneSec + uint(LANE_STRIDE) * l;
     bool  art = uintBitsToFloat(T[o + 5u]) > 10.0;
     bool  empty = (st >> 16u) == 0u;
     vColor = vec4(0.0);

@@ -112,6 +112,7 @@ TrafficWorld buildTrafficWorld(const CityMap& m) {
         }
     }
     for (uint8_t s : signalled) w.signalCount += s;
+    if (lanes.size() != size_t(w.laneCount) * LANE_STRIDE) throw std::runtime_error("lane record size != LANE_STRIDE");
     if (w.laneCount >= (1u << 18)) throw std::runtime_error("too many lanes for the request encoding (2^18)");
 
     std::vector<uint32_t> adjDirEdge(m.adj.size());

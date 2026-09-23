@@ -1,7 +1,8 @@
 // Shared by agents.comp and trains.vert (pasted in by #include).
 // The including shader declares:
 //   readonly buffer World { uint W[]; };
-//   uniform uint uSec[12]; uniform uvec4 uCounts; uniform uint uDayOffset;
+//   uniform uint uSec[SECTION_COUNT]; uniform uvec4 uCounts; uniform uint uDayOffset;
+// Section indices (SEC_*) come from gpu_layout.h, which the including shader pulls in first.
 
 const uint kNone = 0xFFFFFFFFu;
 const uint kMin  = 60000u;
@@ -13,34 +14,34 @@ const uint kLastLoopBoarding = 1410u * kMin; // 23:30
 
 float wf(uint i) { return uintBitsToFloat(W[i]); }
 
-vec2  nodePos(uint n)     { uint o = uSec[0] + 2u * n; return vec2(wf(o), wf(o + 1u)); }
-uint  adjOff(uint n)      { return W[uSec[1] + n]; }
-uint  adjAt(uint k)       { return W[uSec[2] + k] & 0x7FFFFFFFu; }
-bool  adjArterial(uint k) { return (W[uSec[2] + k] >> 31u) != 0u; }
+vec2  nodePos(uint n)     { uint o = uSec[SEC_NODE_POS] + 2u * n; return vec2(wf(o), wf(o + 1u)); }
+uint  adjOff(uint n)      { return W[uSec[SEC_ADJ_OFF] + n]; }
+uint  adjAt(uint k)       { return W[uSec[SEC_ADJ] + k] & 0x7FFFFFFFu; }
+bool  adjArterial(uint k) { return (W[uSec[SEC_ADJ] + k] >> 31u) != 0u; }
 const float kLocalHalfWidth = 3.5, kArterialHalfWidth = 8.0; // m, must match roadWidth() in mapgen.cpp
 float roadHalfWidth(uint a, uint b) {
     for (uint k = adjOff(a); k < adjOff(a + 1u); ++k)
         if (adjAt(k) == b) return adjArterial(k) ? kArterialHalfWidth : kLocalHalfWidth;
     return kLocalHalfWidth;
 }
-uvec4 block(uint b)       { uint o = uSec[3] + 4u * b; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
-uint  pick(uint i)        { return W[uSec[4] + i]; }
-vec4  railPt(uint i)      { uint o = uSec[5] + 4u * i; return vec4(wf(o), wf(o + 1u), wf(o + 2u), 0.0); }
-uvec4 lineInfo(uint l)    { uint o = uSec[6] + 4u * l; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
-uint  stationNode(uint s) { return W[uSec[7] + 4u * s]; }
-vec2  stationPos(uint s)  { uint o = uSec[7] + 4u * s; return vec2(wf(o + 1u), wf(o + 2u)); }
-uvec2 railEntry(uint a, uint b) { uint o = uSec[8] + 2u * (a * uCounts.z + b); return uvec2(W[o], W[o + 1u]); }
+uvec4 block(uint b)       { uint o = uSec[SEC_BLOCKS] + 4u * b; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
+uint  pick(uint i)        { return W[uSec[SEC_PICK] + i]; }
+vec4  railPt(uint i)      { uint o = uSec[SEC_RAIL_PTS] + 4u * i; return vec4(wf(o), wf(o + 1u), wf(o + 2u), 0.0); }
+uvec4 lineInfo(uint l)    { uint o = uSec[SEC_LINE_INFO] + 4u * l; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
+uint  stationNode(uint s) { return W[uSec[SEC_STATION_INFO] + 4u * s]; }
+vec2  stationPos(uint s)  { uint o = uSec[SEC_STATION_INFO] + 4u * s; return vec2(wf(o + 1u), wf(o + 2u)); }
+uvec2 railEntry(uint a, uint b) { uint o = uSec[SEC_RAIL_TABLE] + 2u * (a * uCounts.z + b); return uvec2(W[o], W[o + 1u]); }
 
 // Line direction: A = (first profile entry, entries, loop, line)
 //                 B = (headway, period / trip duration, fleet / trips per day, occupancy base), ms
-uvec4 lineDirA(uint ld) { uint o = uSec[9] + 8u * ld; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
-uvec4 lineDirB(uint ld) { uint o = uSec[9] + 8u * ld + 4u; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
+uvec4 lineDirA(uint ld) { uint o = uSec[SEC_LINE_DIR] + 8u * ld; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
+uvec4 lineDirB(uint ld) { uint o = uSec[SEC_LINE_DIR] + 8u * ld + 4u; return uvec4(W[o], W[o + 1u], W[o + 2u], W[o + 3u]); }
 
-uint  profStation(uint k) { return W[uSec[10] + 4u * k]; }
-float profArc(uint k)     { return wf(uSec[10] + 4u * k + 1u); }
-uint  profArr(uint k)     { return W[uSec[10] + 4u * k + 2u]; }
-uint  profDep(uint k)     { return W[uSec[10] + 4u * k + 3u]; }
-uint  profIndex(uint ld, uint s) { return W[uSec[11] + ld * uCounts.z + s]; }
+uint  profStation(uint k) { return W[uSec[SEC_PROFILE] + 4u * k]; }
+float profArc(uint k)     { return wf(uSec[SEC_PROFILE] + 4u * k + 1u); }
+uint  profArr(uint k)     { return W[uSec[SEC_PROFILE] + 4u * k + 2u]; }
+uint  profDep(uint k)     { return W[uSec[SEC_PROFILE] + 4u * k + 3u]; }
+uint  profIndex(uint ld, uint s) { return W[uSec[SEC_PROFILE_INDEX] + ld * uCounts.z + s]; }
 
 
 uint pcg(uint v) {

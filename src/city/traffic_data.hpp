@@ -1,5 +1,6 @@
 #pragma once
 #include "city/mapgen.hpp"
+#include "gpu_layout.h"
 
 #include <array>
 #include <cstdint>
@@ -9,17 +10,17 @@ constexpr float kLocalSpeed    = 8.3f;  // m/s
 constexpr float kArterialSpeed = 13.9f; // m/s
 constexpr float kCarSlot       = 6.5f;  // m of lane per queued car
 
-// Offsets of the tables inside TrafficWorld::data (in uints). Must match traffic.comp.
+// Offsets of the tables inside TrafficWorld::data (in uints). Indices come from gpu_layout.h (shared with GLSL).
 enum TrafficSection : int {
-    kTSecLanes,       // 8 per lane: from node, to node, queue offset, capacity, length (float bits),
-                      //   max speed (float bits), signal, directed edge
-                      //   signal: [0,2) phase (0 none, 1 east-west, 2 north-south) | [2,4) lane index
-                      //           | [8,16) cycle s | [16,32) offset s
-    kTSecDirEdges,    // per directed edge (edge * 2 + dir): first lane | lane count << 24
-    kTSecAdjDirEdge,  // per CSR slot: directed edge leaving the node through that slot
-    kTSecNodeRegion,  // per node: region
-    kTSecNextSlot,    // bytes, region * nodes + node: CSR slot (0..254) towards the region, 255 = none
-    kTSectionCount
+    kTSecLanes       = TSEC_LANES,        // 8 per lane: from node, to node, queue offset, capacity, length (float bits),
+                                          //   max speed (float bits), signal, directed edge
+                                          //   signal: [0,2) phase (0 none, 1 east-west, 2 north-south) | [2,4) lane index
+                                          //           | [8,16) cycle s | [16,32) offset s
+    kTSecDirEdges    = TSEC_DIR_EDGES,    // per directed edge (edge * 2 + dir): first lane | lane count << 24
+    kTSecAdjDirEdge  = TSEC_ADJ_DIR_EDGE, // per CSR slot: directed edge leaving the node through that slot
+    kTSecNodeRegion  = TSEC_NODE_REGION,  // per node: region
+    kTSecNextSlot    = TSEC_NEXT_SLOT,    // bytes, region * nodes + node: CSR slot (0..254) towards the region, 255 = none
+    kTSectionCount   = TRAFFIC_SECTION_COUNT
 };
 
 struct TrafficWorld {

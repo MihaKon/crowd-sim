@@ -53,7 +53,7 @@ add_library(citygen STATIC
   src/city/buildings.cpp
   src/city/sim_data.cpp
   src/city/traffic_data.cpp)
-target_include_directories(citygen PUBLIC src)
+target_include_directories(citygen PUBLIC src shaders)
 target_link_libraries(citygen PUBLIC Threads::Threads)
 target_compile_options(citygen PRIVATE ${WARNINGS})
 
