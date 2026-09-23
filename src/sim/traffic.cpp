@@ -8,13 +8,17 @@
 
 namespace {
 
-constexpr GLuint   kLocalSize  = 256;
+constexpr GLuint   kLocalSize  = LOCAL_SIZE;
 constexpr uint32_t kMaxVisible = 1'000'000;
 constexpr uint32_t kNone       = 0xFFFFFFFFu;
 
 enum Loc : GLint {
-    kNow = 0, kDt, kLaneCount, kDayOffset, kCarCount, kOwnerCount, kView, kStride, kCapacity, kCounts, kSec,
-    kAdvance = 22, kEmit, kCollect, kTSec, kSeed = 30, kNodeCount
+    kNow = TRAFFIC_LOC_NOW, kDt = TRAFFIC_LOC_DT, kLaneCount = TRAFFIC_LOC_LANE_COUNT,
+    kDayOffset = TRAFFIC_LOC_DAY_OFFSET, kCarCount = TRAFFIC_LOC_CAR_COUNT, kOwnerCount = TRAFFIC_LOC_OWNER_COUNT,
+    kView = TRAFFIC_LOC_VIEW, kStride = TRAFFIC_LOC_STRIDE, kCapacity = TRAFFIC_LOC_CAPACITY,
+    kCounts = LOC_COUNTS, kSec = LOC_SEC,
+    kAdvance = TRAFFIC_LOC_ADVANCE, kEmit = TRAFFIC_LOC_EMIT, kCollect = TRAFFIC_LOC_COLLECT, kTSec = TRAFFIC_LOC_TSEC,
+    kSeed = TRAFFIC_LOC_SEED, kNodeCount = TRAFFIC_LOC_NODE_COUNT
 };
 enum DrawLoc : GLint { kDCenter = 0, kDScale, kDPpm, kDCapacity, kDOwnerCount };
 
@@ -68,7 +72,7 @@ void Traffic::setWorld(const CityMap& map, const SimWorld& sim, GLuint worldBuf)
 
     for (GLuint prog : {spawn_, move_, commit_}) {
         glProgramUniform1ui(prog, kLaneCount, world_.laneCount);
-        glProgramUniform1ui(prog, kDayOffset, 6u * 3600u * 1000u); // same clock as Agents::kDayOffset
+        glProgramUniform1ui(prog, kDayOffset, DAY_START_MS);
         glProgramUniform4ui(prog, kCounts, sim.residentialCount, sim.workCount, sim.stationCount, sim.lineCount);
         glProgramUniform1uiv(prog, kSec, kSectionCount, sim.sec.data());
         glProgramUniform1uiv(prog, kTSec, kTSectionCount, world_.sec.data());

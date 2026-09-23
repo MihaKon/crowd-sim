@@ -33,15 +33,15 @@ public:
     void destroy();
 
     void setCarBuffers(GLuint lane, GLuint route) { carLane_ = lane; carRoute_ = route; }
-    void setCarOwnership(uint32_t every) { glProgramUniform1ui(sim_, 23, every); }
+    void setCarOwnership(uint32_t every) { glProgramUniform1ui(sim_, AGENTS_LOC_OWNER_EVERY, every); }
     GLuint worldBuffer() const { return worldBuf_; }
     GLuint visibleBuffer() const { return visible_; }
     GLuint visibleCapacity() const { return capacity_; }
-    void   setSelected(uint32_t id) { glProgramUniform1ui(cull_, 24, id); }
+    void   setSelected(uint32_t id) { glProgramUniform1ui(cull_, AGENTS_LOC_SELECTED, id); }
     void   setHeat(uint32_t mode, uint32_t dim, float cellsPerMetre) {
-        glProgramUniform1ui(cull_, 25, mode);
-        glProgramUniform1ui(cull_, 26, dim);
-        glProgramUniform1f(cull_, 27, cellsPerMetre);
+        glProgramUniform1ui(cull_, AGENTS_LOC_HEAT_MODE, mode);
+        glProgramUniform1ui(cull_, AGENTS_LOC_HEAT_DIM, dim);
+        glProgramUniform1f(cull_, AGENTS_LOC_HEAT_SCALE, cellsPerMetre);
     }
     AgentRaw readAgent(uint32_t id) const;                                   // stalls: use rarely
     GLuint statusBuffer() const { return status_; }
@@ -52,7 +52,7 @@ public:
     uint32_t dayOffsetMs() const { return kDayOffset; }
     const SimWorld& world() const { return world_; }
 
-    static constexpr uint32_t kDayOffset = 6u * 3600u * 1000u; // simulation starts at 06:00
+    static constexpr uint32_t kDayOffset = DAY_START_MS; // simulation starts at 06:00
 
 private:
     void bind() const;

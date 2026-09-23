@@ -1,5 +1,6 @@
 #pragma once
 #include "city/mapgen.hpp"
+#include "gpu_layout.h"
 
 #include <array>
 #include <cstdint>
@@ -11,24 +12,24 @@ constexpr float kTransferTime = 240.0f; // s
 constexpr float kLoopHeadway  = 180.0f; // s, ring and cross-town lines
 constexpr float kLineHeadway  = 240.0f; // s, radial lines
 
-// Offsets of the tables inside SimWorld::data (in uints). Must match common.glsl.
+// Offsets of the tables inside SimWorld::data (in uints). Indices come from gpu_layout.h (shared with GLSL).
 enum Section : int {
-    kSecNodePos,      // 2 per node: x, y (float bits)
-    kSecAdjOff,       // CSR offsets, nodes + 1
-    kSecAdj,          // CSR neighbours; top bit set: the street to it is an arterial
-    kSecBlocks,       // 4 per block: anchor node, nearest station, shop block, type
-    kSecPick,         // residential block ids, then workplaces by pay: low, mid, high
-                      // (weighted by repetition: bigger employers appear more often)
-    kSecRailPts,      // 4 per point: x, y, arc length (float bits), 0
-    kSecLineInfo,     // 4 per line: first point, point count, loop, total length (float bits)
-    kSecStationInfo,  // 4 per station: node, x, y (float bits), 0
-    kSecRailTable,    // 2 per (from, to) station: travel time s (float bits), first leg (line << 16 | alight)
-    kSecLineDir,      // 8 per line direction (line * 2 + dir):
-                      //   first profile entry, entries, loop, line,
-                      //   headway ms, period ms (loop) / trip duration ms, fleet (loop) / trips per day, occupancy base
-    kSecProfile,      // 4 per entry: station, arc (float bits), arrival ms, departure ms (from the first station)
-    kSecProfileIndex, // line directions * stations: entry of the station in the profile, or kNone
-    kSectionCount
+    kSecNodePos      = SEC_NODE_POS,      // 2 per node: x, y (float bits)
+    kSecAdjOff       = SEC_ADJ_OFF,       // CSR offsets, nodes + 1
+    kSecAdj          = SEC_ADJ,           // CSR neighbours; top bit set: the street to it is an arterial
+    kSecBlocks       = SEC_BLOCKS,        // 4 per block: anchor node, nearest station, shop block, type
+    kSecPick         = SEC_PICK,          // residential block ids, then workplaces by pay: low, mid, high
+                                          // (weighted by repetition: bigger employers appear more often)
+    kSecRailPts      = SEC_RAIL_PTS,      // 4 per point: x, y, arc length (float bits), 0
+    kSecLineInfo     = SEC_LINE_INFO,     // 4 per line: first point, point count, loop, total length (float bits)
+    kSecStationInfo  = SEC_STATION_INFO,  // 4 per station: node, x, y (float bits), 0
+    kSecRailTable    = SEC_RAIL_TABLE,    // 2 per (from, to) station: travel time s (float bits), first leg (line << 16 | alight)
+    kSecLineDir      = SEC_LINE_DIR,      // 8 per line direction (line * 2 + dir):
+                                          //   first profile entry, entries, loop, line,
+                                          //   headway ms, period ms (loop) / trip duration ms, fleet (loop) / trips per day, occupancy base
+    kSecProfile      = SEC_PROFILE,       // 4 per entry: station, arc (float bits), arrival ms, departure ms (from the first station)
+    kSecProfileIndex = SEC_PROFILE_INDEX, // line directions * stations: entry of the station in the profile, or kNone
+    kSectionCount    = SECTION_COUNT
 };
 
 // Everything the agent kernel needs, packed into one uint array (one SSBO).

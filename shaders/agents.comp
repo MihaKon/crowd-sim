@@ -1,9 +1,10 @@
 #version 460
+#include "gpu_layout.h"
 // Event-driven agents: a thread does real work only when its agent's next event is due.
 // Positions are never stored; they follow from the current leg and its start time,
 // and are computed only for agents that are drawn.
 
-layout(local_size_x = 256) in; // must match kLocalSize in agents.cpp
+layout(local_size_x = LOCAL_SIZE) in;
 
 layout(std430, binding = 0) buffer Status          { uvec2 status[]; };    // x: next event (ms), y: state bits
 layout(std430, binding = 1) buffer Legs            { uvec4 legs[]; };
@@ -18,24 +19,24 @@ layout(std430, binding = 10) buffer CarRoute       { uvec4 carRoute[]; };
 layout(std430, binding = 16) buffer Select         { uvec4 selAgent; uvec4 selCar; };   // x, y (float bits), valid, kind / car
 layout(std430, binding = 18) buffer Heat           { uint heat[]; };
 
-layout(location = 0)  uniform int   uMode;      // 0: init, 1: step
-layout(location = 1)  uniform uint  uCount;
-layout(location = 2)  uniform uint  uNow;       // ms since simulation start
-layout(location = 3)  uniform uint  uDayOffset; // clock time at simulation start, ms
-layout(location = 4)  uniform uint  uSeed;
-layout(location = 5)  uniform uint  uCollectStats; // count states this frame (once per second is enough)
-layout(location = 6)  uniform vec4  uView;      // visible world rect: min.xy, max.xy
-layout(location = 7)  uniform uint  uStride;    // LOD: only every n-th agent is drawn
-layout(location = 8)  uniform uint  uCapacity;
-layout(location = 9)  uniform uvec4 uCounts;    // residential picks, work picks, stations, lines
-layout(location = 10) uniform uint  uSec[12];   // section offsets into W (Section enum)
-layout(location = 22) uniform uint  uTrainCap;  // passengers per train
-layout(location = 23) uniform uint  uOwnerEvery; // every n-th agent owns a car (car = id / n), set by Traffic
-layout(location = 24) uniform uint  uSelected;   // inspected agent (kNone: none): its position goes to selAgent
-layout(location = 25) uniform uint  uHeatMode;   // 0 off, 1 people outdoors, 2 everyone
-layout(location = 26) uniform uint  uHeatDim;
-layout(location = 27) uniform float uHeatScale;  // grid cells per metre
-layout(location = 28) uniform uvec3 uWorkByPay;  // jobs per pay level (low, mid, high), after the homes in pick()
+layout(location = AGENTS_LOC_MODE)  uniform int   uMode;      // 0: init, 1: step
+layout(location = AGENTS_LOC_COUNT) uniform uint  uCount;
+layout(location = AGENTS_LOC_NOW)   uniform uint  uNow;       // ms since simulation start
+layout(location = AGENTS_LOC_DAY_OFFSET) uniform uint  uDayOffset; // clock time at simulation start, ms
+layout(location = AGENTS_LOC_SEED)  uniform uint  uSeed;
+layout(location = AGENTS_LOC_COLLECT_STATS) uniform uint  uCollectStats; // count states this frame (once per second is enough)
+layout(location = AGENTS_LOC_VIEW)  uniform vec4  uView;      // visible world rect: min.xy, max.xy
+layout(location = AGENTS_LOC_STRIDE) uniform uint  uStride;    // LOD: only every n-th agent is drawn
+layout(location = AGENTS_LOC_CAPACITY) uniform uint  uCapacity;
+layout(location = LOC_COUNTS) uniform uvec4 uCounts;    // residential picks, work picks, stations, lines
+layout(location = LOC_SEC)    uniform uint  uSec[SECTION_COUNT];   // section offsets into W (Section enum)
+layout(location = AGENTS_LOC_TRAIN_CAP)   uniform uint  uTrainCap;  // passengers per train
+layout(location = AGENTS_LOC_OWNER_EVERY) uniform uint  uOwnerEvery; // every n-th agent owns a car (car = id / n), set by Traffic
+layout(location = AGENTS_LOC_SELECTED)    uniform uint  uSelected;   // inspected agent (kNone: none): its position goes to selAgent
+layout(location = AGENTS_LOC_HEAT_MODE)   uniform uint  uHeatMode;   // 0 off, 1 people outdoors, 2 everyone
+layout(location = AGENTS_LOC_HEAT_DIM)    uniform uint  uHeatDim;
+layout(location = AGENTS_LOC_HEAT_SCALE)  uniform float uHeatScale;  // grid cells per metre
+layout(location = AGENTS_LOC_WORK_BY_PAY) uniform uvec3 uWorkByPay;  // jobs per pay level (low, mid, high), after the homes in pick()
 
 #include "common.glsl"
 
@@ -384,8 +385,8 @@ void main() {
 
 #else // PASS_CULL
 
-const uint kPerThread = 4u; // agents per thread, must match kCullPerThread in agents.cpp
-const uint kBatch     = 256u * kPerThread;
+const uint kPerThread = uint(CULL_PER_THREAD); // agents per thread
+const uint kBatch     = uint(LOCAL_SIZE) * kPerThread;
 
 shared uint sCount[8]; // walking, waiting, riding, home, work, shop, (unused), driving
 shared uint sVis, sVisBase;
