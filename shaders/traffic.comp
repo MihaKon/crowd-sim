@@ -1,0 +1,343 @@
+#version 460
+// Lanes are FIFO queues of cars, stepped with a fixed time step. Three passes per step:
+//   PASS_SPAWN  (per car)  parked cars that want to leave bid for an entry lane
+//   PASS_MOVE   (per lane) admit the winning entry, move cars front to back, park arrivals,
+//                          the front car bids for a place on its next lane
+//   PASS_COMMIT (per lane) the winning transfer bid moves its car onto this lane
+// Bids are atomicMin on the target lane: each lane accepts at most one car per pass and
+// each source lane loses at most its front car, so no locks are needed.
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 0)  buffer Status             { uvec2 status[]; };  // agents: wake the driver on arrival
+layout(std430, binding = 3)  readonly buffer World     { uint W[]; };
+layout(std430, binding = 5)  buffer Stats              { uint stats[16]; };
+layout(std430, binding = 8)  buffer CarLane            { uint carLane[]; };   // lane, kNone parked, kSpawn about to enter
+layout(std430, binding = 9)  buffer CarKin             { vec4 carKin[]; };    // position on lane, speed, time stopped, transfers
+layout(std430, binding = 10) buffer CarRoute           { uvec4 carRoute[]; }; // destination, parked-at node, driver / kNone, next departure
+layout(std430, binding = 11) readonly buffer Traffic   { uint T[]; };
+layout(std430, binding = 12) buffer LaneState          { uint laneHT[]; };    // 2 per lane: head, tail (ever increasing)
+layout(std430, binding = 13) buffer LaneQueue          { uint laneQueue[]; };
+layout(std430, binding = 14) buffer LaneReq            { uvec2 laneReq[]; };  // x: transfer bid, y: entry bid
+layout(std430, binding = 15) buffer CarVisible         { uint carCmd[4]; uvec4 carVis[]; }; // x, y (float bits), car, heading | speed << 16
+layout(std430, binding = 16) buffer Select             { uvec4 selAgent; uvec4 selCar; };
+layout(std430, binding = 20) buffer LaneStat           { uint laneStat[]; }; // cars << 16 | jam (0..65535)
+
+layout(location = 0)  uniform uint  uNow;       // ms, end of this step
+layout(location = 1)  uniform float uDt;        // s
+layout(location = 2)  uniform uint  uLaneCount;
+layout(location = 3)  uniform uint  uDayOffset;
+layout(location = 4)  uniform uint  uCarCount;
+layout(location = 5)  uniform uint  uOwnerCount; // cars [0, owners) belong to agents, the rest is the service fleet
+layout(location = 6)  uniform vec4  uView;
+layout(location = 7)  uniform uint  uStride;
+layout(location = 8)  uniform uint  uCapacity;
+layout(location = 9)  uniform uvec4 uCounts;
+layout(location = 10) uniform uint  uSec[12];
+layout(location = 22) uniform uint  uAdvance;   // 0: paused, only collect visible cars
+layout(location = 23) uniform uint  uEmit;
+layout(location = 24) uniform uint  uCollect;
+layout(location = 25) uniform uint  uTSec[5];
+layout(location = 30) uniform uint  uSeed;
+layout(location = 31) uniform uint  uNodeCount;
+layout(location = 32) uniform uint  uSelectedCar; // inspected car (kNone: none): its position goes to selCar
+layout(location = 33) uniform uint  uLaneStats;   // write laneStat this step (congestion layer visible)
+
+#include "common.glsl"
+
+const uint  kSpawn        = 0xFFFFFFFEu;
+const float kCarLen       = 4.5;
+const float kMinGap       = 2.0;
+const float kHeadway      = 1.0;  // s: keep this much time to the car ahead
+const float kAccel        = 2.5;  // m/s^2
+const uint  kMaxTransfers = 400u; // lost: give up and park
+
+
+uint  laneFrom(uint l)   { return T[uTSec[0] + 8u * l]; }
+uint  laneTo(uint l)     { return T[uTSec[0] + 8u * l + 1u]; }
+uint  laneQOff(uint l)   { return T[uTSec[0] + 8u * l + 2u]; }
+uint  laneCap(uint l)    { return T[uTSec[0] + 8u * l + 3u]; }
+float laneLen(uint l)    { return uintBitsToFloat(T[uTSec[0] + 8u * l + 4u]); }
+float laneVmax(uint l)   { return uintBitsToFloat(T[uTSec[0] + 8u * l + 5u]); }
+uint  laneSignal(uint l) { return T[uTSec[0] + 8u * l + 6u]; }
+uint  dirEdgeLanes(uint de) { return T[uTSec[1] + de]; }
+uint  adjDirEdge(uint k)    { return T[uTSec[2] + k]; }
+uint  nodeRegion(uint n)    { return T[uTSec[3] + n]; }
+uint  nextSlot(uint r, uint v) {
+    uint i = r * uNodeCount + v;
+    return (T[uTSec[4] + (i >> 2u)] >> ((i & 3u) * 8u)) & 0xFFu;
+}
+
+uint laneHead(uint l)            { return laneHT[2u * l]; }
+uint laneTail(uint l)            { return laneHT[2u * l + 1u]; }
+uint queueAt(uint l, uint i)     { return laneQueue[laneQOff(l) + i % laneCap(l)]; }
+
+bool hasSpace(uint l) {
+    uint h = laneHead(l), t = laneTail(l);
+    if (t - h >= laneCap(l)) return false;
+    return t == h || carKin[queueAt(l, t - 1u)].x >= kCarLen + kMinGap;
+}
+
+// Directed edge to take from node v towards dest (kNone: already there).
+// Far away: follow the precomputed tree of the destination's region.
+// In the destination's region: greedy, no U-turns.
+uint nextDirEdge(uint v, uint prev, uint dest, uint salt) {
+    if (v == dest) return kNone;
+    uint b = adjOff(v), e = adjOff(v + 1u);
+    if (e == b) return kNone;
+    uint r = nodeRegion(dest);
+    if (r != nodeRegion(v)) {
+        uint s = nextSlot(r, v);
+        if (s < e - b) return adjDirEdge(b + s);
+    }
+    vec2  g = nodePos(dest);
+    uint  best = b;
+    float bestD = 1e30;
+    for (uint k = b; k < e; ++k) {
+        uint n = adjAt(k);
+        if (n == prev && e - b > 1u) continue;
+        float d = length(nodePos(n) - g) * (1.0 + 0.1 * rnd(salt));
+        if (d < bestD) {
+            bestD = d;
+            best  = k;
+        }
+    }
+    return adjDirEdge(best);
+}
+
+uint pickLane(uint de, uint car) {
+    uint x = dirEdgeLanes(de);
+    return (x & 0xFFFFFFu) + car % (x >> 24u);
+}
+
+bool greenLight(uint l) {
+    uint sg = laneSignal(l), phase = sg & 3u;
+    if (phase == 0u) return true;
+    uint cycle = (sg >> 8u) & 0xFFu, tc = (uNow / 1000u + (sg >> 16u)) % cycle, mid = cycle / 2u;
+    return phase == 1u ? tc + 3u < mid : (tc >= mid && tc + 3u < cycle); // 3 s all red
+}
+
+void park(uint car, uint node) {
+    carLane[car] = kNone;
+    uvec4 rt = carRoute[car];
+    rt.y = node;
+    if (rt.z != kNone) {
+        status[rt.z].x = uNow; // wake the driver (agents.comp handles the arrival)
+        rt.z = kNone;
+    } else {
+        uint s = pcg(car * 7u ^ uNow);
+        rt.w = uNow + uint((5.0 + rnd(s) * 15.0) * 60000.0);
+    }
+    carRoute[car] = rt;
+}
+
+vec4 carDrawInfo(uint l, vec4 k) {
+    vec2  a = nodePos(laneFrom(l)), d = nodePos(laneTo(l)) - a;
+    float len = max(length(d), 1e-3);
+    vec2  dir = d / len;
+    uint  lane = (laneSignal(l) >> 2u) & 3u;
+    float centre = laneVmax(l) > 10.0 ? 2.0 + 4.0 * float(lane) : 1.75; 
+    vec2  p = a + dir * clamp(k.x, 0.0, len) + vec2(-dir.y, dir.x) * centre; // drive on the left
+    return vec4(p, atan(dir.y, dir.x), k.y / laneVmax(l));
+}
+
+uvec4 packCar(uint car, vec4 info) {
+    uint heading = uint(clamp((info.z + 3.14159265) / 6.2831853, 0.0, 1.0) * 65535.0);
+    uint speed   = uint(clamp(info.w, 0.0, 1.0) * 65535.0);
+    return uvec4(floatBitsToUint(info.xy), car, heading | (speed << 16u));
+}
+
+uint threadIndex() {
+    return gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x + gl_GlobalInvocationID.x;
+}
+
+
+#if defined(PASS_SPAWN)
+
+void main() {
+    uint car = threadIndex();
+    if (car >= uCarCount) return;
+    uint lane = carLane[car];
+    if (lane != kNone && lane != kSpawn) return;
+
+    uvec4 rt = carRoute[car];
+    if (lane == kNone) {
+        if (car < uOwnerCount || uNow < rt.w) return; // private cars are started by their driver
+        // Service fleet: 70% vans (07:00-19:00), 30% taxis (all day).
+        uint c = clockOf(uNow);
+        if (car % 10u < 7u && (c < 420u * kMin || c > 1140u * kMin)) {
+            uint start = (420u + pcg(car ^ uSeed) % 90u) * kMin;
+            carRoute[car].w = uNow + (start + kDay - c) % kDay;
+            return;
+        }
+        uint s = pcg(car ^ uNow ^ uSeed);
+        rt.x = block(pick(uCounts.x + min(uint(rnd(s) * float(uCounts.y)), uCounts.y - 1u))).x;
+        carRoute[car] = rt;
+        carLane[car]  = kSpawn;
+    }
+
+    uint de = nextDirEdge(rt.y, kNone, rt.x, pcg(car ^ uNow));
+    if (de == kNone) {
+        park(car, rt.x);
+        return;
+    }
+    atomicMin(laneReq[pickLane(de, car)].y, car); // bid for the entry
+}
+
+#elif defined(PASS_MOVE)
+
+shared uint sCnt, sBase, sOnRoad, sStopped;
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+    if (lid == 0u) {
+        sCnt     = 0u;
+        sOnRoad  = 0u;
+        sStopped = 0u;
+    }
+    barrier();
+
+    uint l     = threadIndex();
+    uint nVis  = 0u, local = 0u;
+    uint h = 0u, t = 0u, cap = 1u, qo = 0u;
+
+    if (l < uLaneCount) {
+        cap = laneCap(l);
+        qo  = laneQOff(l);
+        h   = laneHead(l);
+        t   = laneTail(l);
+        float len = laneLen(l);
+
+        if (uAdvance != 0u) {
+            // 1. Admit the winning entry bid.
+            uint sp = laneReq[l].y;
+            if (sp != kNone) {
+                laneReq[l].y = kNone;
+                if (hasSpace(l)) {
+                    laneQueue[qo + t % cap] = sp;
+                    t += 1u;
+                    laneHT[2u * l + 1u] = t;
+                    carLane[sp] = l;
+                    carKin[sp]  = vec4(0.0);
+                }
+            }
+
+            // 2. Move cars front to back: never closer than kMinGap, keep kHeadway seconds.
+            bool  go   = greenLight(l);
+            float vmax = laneVmax(l);
+            float lead = go ? 1e9 : len + kMinGap; // rear of whatever is ahead (stop line when red)
+            for (uint i = h; i < t; ++i) {
+                uint  car  = laneQueue[qo + i % cap];
+                vec4  k    = carKin[car];
+                float gap  = lead - kMinGap - k.x;
+                float v    = min(min(k.y + kAccel * uDt, vmax), max(gap, 0.0) / kHeadway);
+                float next = clamp(k.x + v * uDt, k.x, min(len, lead - kMinGap));
+                k.y = (next - k.x) / max(uDt, 1e-3);
+                k.x = next;
+                k.z = k.y < 0.3 ? k.z + uDt : 0.0;
+                carKin[car] = k;
+                lead = k.x - kCarLen;
+            }
+
+            // 3. Front car at the end of the lane: park, or bid for the next lane.
+            if (t > h && go) {
+                uint car = laneQueue[qo + h % cap];
+                vec4 k   = carKin[car];
+                if (k.x >= len - 0.5) {
+                    uvec4 rt = carRoute[car];
+                    uint  to = laneTo(l);
+                    if (to == rt.x || k.w >= float(kMaxTransfers)) {
+                        h += 1u;
+                        laneHT[2u * l] = h;
+                        park(car, rt.x);
+                    } else {
+                        uint salt = pcg(car ^ uNow);
+                        uint de   = nextDirEdge(to, laneFrom(l), rt.x, salt);
+                        if (k.z > 60.0) { // stuck for a minute: any other way out
+                            uint b = adjOff(to), n = adjOff(to + 1u) - b;
+                            de = adjDirEdge(b + min(uint(rnd(salt) * float(n)), n - 1u));
+                        }
+                        uint target = pickLane(de, car);
+                        if (hasSpace(target)) atomicMin(laneReq[target].x, ((salt & 0x3FFFu) << 18u) | l);
+                    }
+                }
+            }
+        }
+
+        // 4. Congestion per lane for the traffic layer: how full, how much of it stands.
+        if (uLaneStats != 0u && uEmit != 0u) {
+            uint n = t - h, stopped = 0u;
+            for (uint i = h; i < t; ++i) stopped += carKin[laneQueue[qo + i % cap]].y < 0.5 ? 1u : 0u;
+            float jam = n == 0u ? 0.0
+                      : clamp(0.65 * float(stopped) / float(n) + 0.6 * float(n) / float(cap), 0.0, 1.0);
+            laneStat[l] = (min(n, 65535u) << 16u) | uint(jam * 65535.0);
+        }
+
+        // 5. Statistics and visible cars (last step of the frame).
+        if (uCollect != 0u) {
+            uint stopped = 0u;
+            for (uint i = h; i < t; ++i) stopped += carKin[laneQueue[qo + i % cap]].y < 0.5 ? 1u : 0u;
+            if (t > h) atomicAdd(sOnRoad, t - h);
+            if (stopped > 0u) atomicAdd(sStopped, stopped);
+        }
+        if (uEmit != 0u) {
+            for (uint i = h; i < t; ++i) {
+                uint car = laneQueue[qo + i % cap];
+                if (car == uSelectedCar) selCar = uvec4(floatBitsToUint(carDrawInfo(l, carKin[car]).xy), 1u, car);
+                if (car % uStride != 0u) continue;
+                vec2 p = carDrawInfo(l, carKin[car]).xy;
+                if (all(greaterThanEqual(p, uView.xy)) && all(lessThanEqual(p, uView.zw))) nVis += 1u;
+            }
+            if (nVis > 0u) local = atomicAdd(sCnt, nVis);
+        }
+    }
+
+    barrier();
+    if (lid == 0u) {
+        sBase = sCnt > 0u ? atomicAdd(carCmd[0], sCnt * 6u) / 6u : 0u; // count is in vertices
+        if (sOnRoad > 0u) atomicAdd(stats[8], sOnRoad);
+        if (sStopped > 0u) atomicAdd(stats[9], sStopped);
+    }
+    barrier();
+    if (nVis > 0u) {
+        uint o = sBase + local;
+        for (uint i = h; i < t; ++i) {
+            uint car = laneQueue[qo + i % cap];
+            if (car % uStride != 0u) continue;
+            vec4 info = carDrawInfo(l, carKin[car]);
+            if (all(greaterThanEqual(info.xy, uView.xy)) && all(lessThanEqual(info.xy, uView.zw))) {
+                if (o < uCapacity) carVis[o] = packCar(car, info);
+                o += 1u;
+            }
+        }
+    }
+}
+
+#elif defined(PASS_COMMIT)
+
+void main() {
+    uint l = threadIndex();
+    if (l >= uLaneCount) return;
+    uint bid = laneReq[l].x;
+    if (bid == kNone) return;
+    laneReq[l].x = kNone;
+    if (!hasSpace(l)) return;
+
+    uint src = bid & 0x3FFFFu; // only this thread pops src's head in this pass
+    uint sh  = laneHead(src);
+    if (laneTail(src) == sh) return;
+    uint car = queueAt(src, sh);
+    laneHT[2u * src] = sh + 1u;
+
+    uint t = laneTail(l);
+    laneQueue[laneQOff(l) + t % laneCap(l)] = car;
+    laneHT[2u * l + 1u] = t + 1u;
+    carLane[car] = l;
+    vec4 k = carKin[car];
+    k.x = 0.0;
+    k.z = 0.0;
+    k.w += 1.0;
+    carKin[car] = k;
+}
+
+#endif

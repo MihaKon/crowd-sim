@@ -1,0 +1,27 @@
+#version 460
+// Finds the drawn person and the drawn car closest to a clicked point.
+// Keys are (distance quantised to 10 bits) << 22 | index in the visible list,
+// so a single atomicMin per candidate picks the closest one.
+
+layout(local_size_x = 256) in;
+
+layout(std430, binding = 4)  readonly buffer Visible    { uint drawCmd[4]; uvec4 visible[]; };
+layout(std430, binding = 15) readonly buffer CarVisible { uint carCmd[4]; uvec4 carVis[]; };
+layout(std430, binding = 17) buffer Pick                { uint best[2]; }; // person, car
+
+layout(location = 0) uniform vec2  uPoint;  // world
+layout(location = 1) uniform float uRadius; // world
+layout(location = 2) uniform uint  uAgentCap;
+layout(location = 3) uniform uint  uCarCap;
+
+uint key(vec2 p, uint index) {
+    float d = length(p - uPoint);
+    if (d >= uRadius) return 0xFFFFFFFFu;
+    return (uint(d / uRadius * 1023.0) << 22u) | index;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x + gl_GlobalInvocationID.x;
+    if (i < min(drawCmd[0], uAgentCap)) atomicMin(best[0], key(uintBitsToFloat(visible[i].xy), i));
+    if (i < min(carCmd[0] / 6u, uCarCap)) atomicMin(best[1], key(uintBitsToFloat(carVis[i].xy), i));
+}

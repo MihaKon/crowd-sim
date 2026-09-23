@@ -1,0 +1,470 @@
+#version 460
+// Event-driven agents: a thread does real work only when its agent's next event is due.
+// Positions are never stored; they follow from the current leg and its start time,
+// and are computed only for agents that are drawn.
+
+layout(local_size_x = 256) in; // must match kLocalSize in agents.cpp
+
+layout(std430, binding = 0) buffer Status          { uvec2 status[]; };    // x: next event (ms), y: state bits
+layout(std430, binding = 1) buffer Legs            { uvec4 legs[]; };
+layout(std430, binding = 2) buffer Plans           { uvec2 plans[]; };     // x: home block, y: work block / kNone
+layout(std430, binding = 3) readonly buffer World  { uint W[]; };
+layout(std430, binding = 4) buffer Visible         { uint drawCmd[4]; uvec4 visible[]; };
+layout(std430, binding = 5) buffer Stats           { uint stats[16]; };
+layout(std430, binding = 6) buffer Occupancy       { uint occupancy[]; };  // passengers per train trip
+layout(std430, binding = 7) buffer Cells           { uint cells[]; };      // coarse position, see packCell
+layout(std430, binding = 8) buffer CarLane         { uint carLane[]; };    // shared with traffic.comp
+layout(std430, binding = 10) buffer CarRoute       { uvec4 carRoute[]; };
+layout(std430, binding = 16) buffer Select         { uvec4 selAgent; uvec4 selCar; };   // x, y (float bits), valid, kind / car
+layout(std430, binding = 18) buffer Heat           { uint heat[]; };
+
+layout(location = 0)  uniform int   uMode;      // 0: init, 1: step
+layout(location = 1)  uniform uint  uCount;
+layout(location = 2)  uniform uint  uNow;       // ms since simulation start
+layout(location = 3)  uniform uint  uDayOffset; // clock time at simulation start, ms
+layout(location = 4)  uniform uint  uSeed;
+layout(location = 5)  uniform uint  uCollectStats; // count states this frame (once per second is enough)
+layout(location = 6)  uniform vec4  uView;      // visible world rect: min.xy, max.xy
+layout(location = 7)  uniform uint  uStride;    // LOD: only every n-th agent is drawn
+layout(location = 8)  uniform uint  uCapacity;
+layout(location = 9)  uniform uvec4 uCounts;    // residential picks, work picks, stations, lines
+layout(location = 10) uniform uint  uSec[12];   // section offsets into W (Section enum)
+layout(location = 22) uniform uint  uTrainCap;  // passengers per train
+layout(location = 23) uniform uint  uOwnerEvery; // every n-th agent owns a car (car = id / n), set by Traffic
+layout(location = 24) uniform uint  uSelected;   // inspected agent (kNone: none): its position goes to selAgent
+layout(location = 25) uniform uint  uHeatMode;   // 0 off, 1 people outdoors, 2 everyone
+layout(location = 26) uniform uint  uHeatDim;
+layout(location = 27) uniform float uHeatScale;  // grid cells per metre
+layout(location = 28) uniform uvec3 uWorkByPay;  // jobs per pay level (low, mid, high), after the homes in pick()
+
+#include "common.glsl"
+
+const uint kMaxHops = 250u;       // give up walking after this many junctions
+const uint kMaxWait = 20u * kMin; // no train within 20 min: walk instead
+const uint kPatience = 4u;        // left behind by this many full trains: walk instead
+const uint kCarSpawn = 0xFFFFFFFEu;
+
+const uint A_HOME = 0u, A_TO_WORK = 1u, A_WORK = 2u, A_TO_SHOP = 3u, A_SHOP = 4u, A_TO_HOME = 5u;
+// Leg kinds
+//   K_INDOOR: x = block
+//   K_WALK:   x = from node, y = to node, z = start ms, w = goal node
+//   K_WAIT:   x = ride, y = trip waited for, z = start ms   (station in the state)
+//   K_RAIL:   x = ride, y = trip on board,   z = start ms   (alighting station in the state)
+//   K_CAR:    x = car, y = start node, z = start ms   (no event until traffic.comp parks the car)
+//   ride = line direction | board entry << 12 | alight entry << 22
+const uint K_INDOOR = 0u, K_WALK = 1u, K_WAIT = 2u, K_RAIL = 3u, K_CAR = 4u;
+
+// State bits: [0,4) activity | [4,7) leg kind | 7 rail still ahead | [8,16) hops | [16,32) station
+// (hops counts junctions while walking and full trains while waiting)
+uint activity(uint s)  { return s & 15u; }
+uint legKind(uint s)   { return (s >> 4u) & 7u; }
+bool railAhead(uint s) { return (s & 128u) != 0u; }
+uint hops(uint s)      { return (s >> 8u) & 255u; }
+uint station(uint s)   { return s >> 16u; }
+uint packState(uint act, uint kind, bool rail, uint h, uint st) {
+    return act | (kind << 4u) | (rail ? 128u : 0u) | (min(h, 255u) << 8u) | ((st & 0xFFFFu) << 16u);
+}
+uint packRide(uint ld, uint i, uint j) { return ld | (i << 12u) | (j << 22u); }
+
+uint  traits(uint id)    { return pcg(id * 0x9E3779B9u ^ uSeed); }
+float walkSpeed(uint id) { return 1.1 + 0.6 * float(traits(id) & 0xFFFFu) / 65535.0; }
+
+// Randomness that stays the same for one agent during one day.
+uint dayRng(uint id, uint t, uint salt) { return pcg(traits(id) ^ (dayOf(t) * 0x85EBCA6Bu) ^ salt); }
+
+// First moment after t (at least one minute later) when the clock shows `tod`.
+uint nextAt(uint t, uint tod) {
+    uint base = t + kMin;
+    return base + (tod + kDay - clockOf(base)) % kDay;
+}
+
+uint departureTod(uint id, bool worker, uint t) {
+    uint s = dayRng(id, t, 1u);
+    return worker ? (390u + uint(rnd(s) * 150.0)) * kMin
+                  : (540u + uint(rnd(s) * 480.0)) * kMin;
+}
+
+
+struct Agent {
+    uint  ev;
+    uint  st;
+    uvec4 leg;
+    uvec2 plan;
+};
+
+// plan.y: workplace block, pay level (0 low, 1 mid, 2 high) in the top 2 bits;
+// kNone: not working.
+const uint kWorkMask = 0x3FFFFFFFu;
+
+uint destBlock(uint act, uvec2 plan) {
+    if (act == A_TO_WORK) return plan.y & kWorkMask;
+    if (act == A_TO_SHOP) return block(plan.x).z; // shop near home
+    return plan.x;
+}
+
+// Greedy pedestrian routing: next street towards the goal, no U-turns
+// (except at dead ends). A little noise spreads people over parallel streets.
+uint nextHop(uint at, uint prev, uint goal, inout uint s) {
+    vec2  g     = nodePos(goal);
+    uint  b     = adjOff(at), e = adjOff(at + 1u);
+    uint  best  = prev;
+    float bestD = 1e30;
+    for (uint k = b; k < e; ++k) {
+        uint n = adjAt(k);
+        if (n == prev && e - b > 1u) continue;
+        float d = length(nodePos(n) - g) * (1.0 + 0.15 * rnd(s));
+        if (d < bestD) {
+            bestD = d;
+            best  = n;
+        }
+    }
+    return best;
+}
+
+void beginWalk(inout Agent a, uint act, bool rail, uint st, uint from, uint goal, uint t) {
+    a.st  = packState(act, K_WALK, rail, 0u, st);
+    a.leg = uvec4(from, from, t, goal);
+    a.ev  = t;
+}
+
+void walkToDestination(inout Agent a, uint act, uint here, uint t) {
+    beginWalk(a, act, false, 0u, stationNode(here), block(destBlock(act, a.plan)).x, t);
+}
+
+// Drive (car owners), walk, or walk + train if that is clearly faster.
+void startTrip(inout Agent a, uint id, uint act, uint fromBlock, uint t) {
+    uvec4 A  = block(fromBlock), B = block(destBlock(act, a.plan));
+    vec2  pa = nodePos(A.x), pb = nodePos(B.x);
+    float v  = walkSpeed(id);
+    float d  = length(pb - pa);
+    if (id % uOwnerEvery == 0u && d > 1200.0) { // hand over to traffic.comp
+        uint car      = id / uOwnerEvery;
+        carRoute[car] = uvec4(B.x, A.x, id, 0u);
+        carLane[car]  = kCarSpawn;
+        a.st  = packState(act, K_CAR, false, 0u, 0u);
+        a.leg = uvec4(car, A.x, t, 0u);
+        a.ev  = kNone; // woken up by traffic.comp when parked
+        return;
+    }
+    if (uCounts.z > 0u && d > 1500.0 && A.y != B.y) {
+        float railT  = uintBitsToFloat(railEntry(A.y, B.y).x);
+        float access = (length(stationPos(A.y) - pa) + length(pb - stationPos(B.y))) * 1.3 / v;
+        if (access + railT + 150.0 < d * 1.3 / v) {
+            beginWalk(a, act, true, A.y, A.x, stationNode(A.y), t);
+            return;
+        }
+    }
+    beginWalk(a, act, false, 0u, A.x, B.x, t);
+}
+
+void enterBuilding(inout Agent a, uint id, uint act, uint blk, uint t) {
+    uint s = dayRng(id, t, 2u);
+    if (act == A_TO_WORK) {
+        a.st = packState(A_WORK, K_INDOOR, false, 0u, 0u);
+        a.ev = t + (480u + uint(rnd(s) * 120.0)) * kMin;
+    } else if (act == A_TO_SHOP) {
+        a.st = packState(A_SHOP, K_INDOOR, false, 0u, 0u);
+        a.ev = t + (10u + uint(rnd(s) * 30.0)) * kMin;
+    } else {
+        a.st = packState(A_HOME, K_INDOOR, false, 0u, 0u);
+        a.ev = nextAt(t, departureTod(id, a.plan.y != kNone, t));
+    }
+    a.leg = uvec4(blk, 0u, t, 0u);
+}
+
+// On the platform of `here` at time t: wait for the next useful train,
+// or walk if none is coming soon.
+void planRail(inout Agent a, uint act, uint here, uint t) {
+    uint  target = block(destBlock(act, a.plan)).y;
+    uvec2 e      = railEntry(here, target);
+    uint  ld, i, j, dep, trip;
+    if (here == target || e.y == kNone || !chooseDirection(e.y >> 16u, here, e.y & 0xFFFFu, ld, i, j) ||
+        !nextDeparture(ld, i, t, dep, trip) || dep - t > kMaxWait) {
+        walkToDestination(a, act, here, t);
+        return;
+    }
+    a.st  = packState(act, K_WAIT, true, 0u, here);
+    a.leg = uvec4(packRide(ld, i, j), trip, t, 0u);
+    a.ev  = dep;
+}
+
+void handleEvent(inout Agent a, uint id) {
+    uint t    = a.ev;
+    uint act  = activity(a.st);
+    uint kind = legKind(a.st);
+
+    if (kind == K_INDOOR) {
+        uint blk = a.leg.x;
+        if (act == A_HOME) {
+            startTrip(a, id, a.plan.y != kNone ? A_TO_WORK : A_TO_SHOP, blk, t);
+        } else if (act == A_WORK) {
+            uint s = dayRng(id, t, 3u);
+            startTrip(a, id, rnd(s) < 0.35 ? A_TO_SHOP : A_TO_HOME, blk, t);
+        } else {
+            startTrip(a, id, A_TO_HOME, blk, t);
+        }
+        return;
+    }
+
+    if (kind == K_WALK) {
+        uint at = a.leg.y, goal = a.leg.w;
+        if (at == goal || hops(a.st) >= kMaxHops) {
+            if (railAhead(a.st)) planRail(a, act, station(a.st), t);
+            else enterBuilding(a, id, act, destBlock(act, a.plan), t);
+            return;
+        }
+        uint  s    = pcg(id * 1664525u ^ t);
+        uint  next = nextHop(at, a.leg.x, goal, s);
+        float len  = length(nodePos(next) - nodePos(at));
+        a.st  = packState(act, K_WALK, railAhead(a.st), hops(a.st) + 1u, station(a.st));
+        a.leg = uvec4(at, next, t, goal);
+        a.ev  = t + uint(len / walkSpeed(id) * 1000.0) + 1u;
+        return;
+    }
+
+    if (kind == K_CAR) {
+        enterBuilding(a, id, act, destBlock(act, a.plan), t);
+        return;
+    }
+
+    uint ld = a.leg.x & 0xFFFu, i = (a.leg.x >> 12u) & 0x3FFu, j = a.leg.x >> 22u;
+
+    if (kind == K_WAIT) { // our train is in: board if there is room
+        uint trip = a.leg.y;
+        if (atomicAdd(occupancy[trip], 1u) >= uTrainCap) {
+            atomicAdd(occupancy[trip], 0xFFFFFFFFu); // full: undo, wait for the next one
+            atomicAdd(stats[6], 1u);
+            uint dep, next;
+            uint missed = hops(a.st) + 1u;
+            if (missed >= kPatience || !nextDeparture(ld, i, t + 1u, dep, next) || dep - t > kMaxWait) {
+                walkToDestination(a, act, station(a.st), t);
+                return;
+            }
+            a.st    = packState(act, K_WAIT, true, missed, station(a.st));
+            a.leg.y = next;
+            a.ev    = dep;
+            return;
+        }
+        a.st  = packState(act, K_RAIL, true, 0u, profStation(lineDirA(ld).x + j));
+        a.leg = uvec4(a.leg.x, trip, t, 0u);
+        a.ev  = t + travelMs(ld, i, j);
+        return;
+    }
+
+    atomicAdd(occupancy[a.leg.y], 0xFFFFFFFFu);
+    uint here = station(a.st);
+    if (here == block(destBlock(act, a.plan)).y) {
+        walkToDestination(a, act, here, t);
+    } else {
+        uint s = pcg(id ^ t ^ 0x2545F491u);
+        planRail(a, act, here, t + uint(60000.0 + rnd(s) * 60000.0));
+    }
+}
+
+// Social class from the home block: 0 poor, 1 middle, 2 wealthy (BlockType numbers).
+uint homeClass(uint blockType) { return blockType == 5u ? 0u : blockType == 6u ? 2u : 1u; }
+
+void initAgent(inout Agent a, uint id) {
+    uint s    = pcg(id ^ uSeed);
+    uint home = pick(min(uint(rnd(s) * float(uCounts.x)), uCounts.x - 1u));
+    uint cls  = homeClass(block(home).w);
+    uint work = kNone;
+    // Fewer of the poor have a job; the wealthy work well paid, the poor in
+    // factories and shops (must match inspector.cpp).
+    if (rnd(s) < (cls == 0u ? 0.55 : cls == 1u ? 0.66 : 0.60)) {
+        float r    = rnd(s);
+        uint  tier = cls == 0u ? (r < 0.8 ? 0u : 1u)
+                   : cls == 1u ? (r < 0.25 ? 0u : r < 0.87 ? 1u : 2u)
+                               : (r < 0.25 ? 1u : 2u);
+        uint base = uCounts.x + (tier > 0u ? uWorkByPay.x : 0u) + (tier > 1u ? uWorkByPay.y : 0u);
+        uint n    = uWorkByPay[tier];
+        work      = pick(base + min(uint(rnd(s) * float(n)), n - 1u)) | (tier << 30u);
+    }
+    a.plan = uvec2(home, work);
+    a.st   = packState(A_HOME, K_INDOOR, false, 0u, 0u);
+    a.leg  = uvec4(home, 0u, 0u, 0u);
+    a.ev   = nextAt(0u, departureTod(id, work != kNone, 0u));
+}
+
+
+// Where a passenger is: on its train, from the timetable. The train left
+// profile entry i at the boarding time (leg.z), so it is (now - leg.z) further.
+vec2 riderPos(Agent a) {
+    uint  ld = a.leg.x & 0xFFFu, i = (a.leg.x >> 12u) & 0x3FFu;
+    uvec4 A = lineDirA(ld), B = lineDirB(ld);
+    uint  tau = profDep(A.x + i) + (uNow > a.leg.z ? uNow - a.leg.z : 0u);
+    if (A.z != 0u) tau %= B.y; // loop: wrap around the circuit
+    vec2 tangent;
+    vec2 p = railPos(A.w, profileArc(A.x, A.y, tau), tangent);
+    if ((ld & 1u) == 1u) tangent = -tangent;
+    return p + vec2(-tangent.y, tangent.x) * 5.0; // its track
+}
+
+// Cell: all the cull pass needs to reject an agent, in one 4 B read, written when the
+// leg changes. [0,15) x, [15,30) y in metres (rough position) | [30,32) what to draw:
+// 0 nothing, 1 walking, 2 on a platform. A walker stays within kCoarseMargin of it.
+const float kCoarseMargin = 511.0;
+uint packCell(vec2 p, uint drawKind) {
+    uvec2 q = uvec2(clamp(p, vec2(0.0), vec2(32767.0)));
+    return q.x | (q.y << 15u) | (drawKind << 30u);
+}
+vec2 unpackCell(uint c) { return vec2(float(c & 0x7FFFu), float((c >> 15u) & 0x7FFFu)); }
+
+// Sprite facing from a movement vector (dominant axis): 0 down, 1 right, 2 up, 3 left.
+uint facingOf(vec2 d) {
+    return abs(d.x) > abs(d.y) ? (d.x > 0.0 ? 1u : 3u) : (d.y > 0.0 ? 2u : 0u);
+}
+
+bool position(uint id, Agent a, out vec2 p, out uint facing) {
+    uint kind = legKind(a.st);
+    uint h    = traits(id);
+    p         = vec2(0.0);
+    facing    = 0u;
+    if (kind == K_INDOOR || kind == K_RAIL) return false;
+
+    if (kind == K_WALK) {
+        vec2  from = nodePos(a.leg.x), d = nodePos(a.leg.y) - from;
+        float len  = length(d);
+        facing     = facingOf(d);
+        if (len < 1e-3) {
+            p = from;
+            return true;
+        }
+        // Legs may start in the future (transfers): clamp the elapsed time at 0.
+        float elapsed = uNow > a.leg.z ? float(uNow - a.leg.z) * 0.001 : 0.0;
+        p = from + d * min(elapsed * walkSpeed(id) / len, 1.0);
+        p += vec2(-d.y, d.x) / len * (roadHalfWidth(a.leg.x, a.leg.y) + 0.5 + 1.5 * float(h & 0xFFu) / 255.0);
+        return true;
+    }
+    float ang = float((h >> 8u) & 0xFFu) * (6.2831853 / 256.0);
+    float r   = 8.0 + 22.0 * float((h >> 16u) & 0xFFu) / 255.0;
+    p      = stationPos(station(a.st)) + vec2(cos(ang), sin(ang)) * r;
+    facing = facingOf(-vec2(cos(ang), sin(ang)));
+    return true;
+}
+
+// Compiled twice: PASS_SIM (init, due events) and PASS_CULL (counters, visible list).
+// Two small kernels keep register pressure low; Intel GPUs drop to a narrower SIMD
+// width for register-hungry kernels.
+
+uint agentId() { // 2D dispatch: at most 65535 workgroups per dimension
+    return gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x + gl_GlobalInvocationID.x;
+}
+
+#ifdef PASS_SIM
+
+void main() {
+    uint id = agentId();
+    if (id >= uCount) return;
+    Agent a;
+    if (uMode == 0) {
+        initAgent(a, id);
+        status[id] = uvec2(a.ev, a.st);
+        legs[id]   = a.leg;
+        plans[id]  = a.plan;
+        cells[id]  = packCell(nodePos(block(a.plan.x).x), 0u);
+        return;
+    }
+    uvec2 st = status[id]; // the only read for most agents
+    if (st.x > uNow) return;
+    a.ev   = st.x;
+    a.st   = st.y;
+    a.leg  = legs[id];
+    a.plan = plans[id];
+    for (int i = 0; i < 8 && a.ev <= uNow; ++i) handleEvent(a, id);
+    status[id] = uvec2(a.ev, a.st);
+    legs[id]   = a.leg;
+    uint k    = legKind(a.st);
+    cells[id] = k == K_WALK   ? packCell(nodePos(a.leg.x), 1u)
+              : k == K_WAIT   ? packCell(stationPos(station(a.st)), 2u)
+              : k == K_INDOOR ? packCell(nodePos(block(a.leg.x).x), 0u)
+              : k == K_RAIL   ? packCell(stationPos(station(a.st)), 0u)
+                              : packCell(nodePos(a.leg.y), 0u); // K_CAR
+}
+
+#else // PASS_CULL
+
+const uint kPerThread = 4u; // agents per thread, must match kCullPerThread in agents.cpp
+const uint kBatch     = 256u * kPerThread;
+
+shared uint sCount[8]; // walking, waiting, riding, home, work, shop, (unused), driving
+shared uint sVis, sVisBase;
+shared vec2 sPos[kBatch]; // visible points of this workgroup, flushed with one global atomic
+shared uint sTag[kBatch];
+shared uint sId[kBatch];
+
+void main() {
+    uint lid = gl_LocalInvocationIndex;
+    if (lid < 8u) sCount[lid] = 0u;
+    if (lid == 0u) sVis = 0u;
+    barrier();
+
+    uint first = (gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * kBatch;
+    for (uint k = 0u; k < kPerThread; ++k) {
+        uint id = first + k * 256u + lid; // coalesced
+        if (id >= uCount) break;
+
+        // Every thread hitting one of 6 shared counters serialises the workgroup: only when asked.
+        if (uCollectStats != 0u) {
+            uint st = status[id].y, kind = legKind(st);
+            atomicAdd(sCount[kind == K_INDOOR ? 3u + activity(st) / 2u : kind == K_CAR ? 7u : kind - 1u], 1u);
+        }
+
+        uint c = cells[id]; // the only read for most agents
+        if (uHeatMode == 2u || (uHeatMode == 1u && (c >> 30u) != 0u)) { // density map
+            vec2 p = unpackCell(c);
+            if ((c >> 30u) == 0u) { // indoors etc: spread over the block instead of its entrance
+                uint h = pcg(id ^ 0x68E31DA4u);
+                p += (vec2(float(h & 0xFFFFu), float(h >> 16u)) / 65535.0 - 0.5) * 100.0;
+            }
+            uvec2 g = min(uvec2(max(p, vec2(0.0)) * uHeatScale), uvec2(uHeatDim - 1u));
+            atomicAdd(heat[g.y * uHeatDim + g.x], 1u);
+        }
+        if (id == uSelected) { // inspected agent: report its position whatever it is doing
+            Agent a;
+            a.ev   = 0u;
+            a.st   = status[id].y;
+            a.leg  = legs[id];
+            a.plan = uvec2(0u);
+            uint kind = legKind(a.st);
+            vec2 p;
+            uint facing;
+            if (kind == K_RAIL) selAgent = uvec4(floatBitsToUint(riderPos(a)), 1u, kind);
+            else if (kind == K_INDOOR) selAgent = uvec4(floatBitsToUint(nodePos(block(a.leg.x).x)), 1u, kind);
+            else if (position(id, a, p, facing)) selAgent = uvec4(floatBitsToUint(p), 1u, kind);
+            // K_CAR: traffic.comp reports the car
+        }
+        if ((c >> 30u) == 0u || id % uStride != 0u) continue;
+        vec2 cp = unpackCell(c);
+        if (any(lessThan(cp, uView.xy - kCoarseMargin)) || any(greaterThan(cp, uView.zw + kCoarseMargin))) continue;
+
+        Agent a;
+        a.ev   = 0u;
+        a.st   = status[id].y;
+        a.leg  = legs[id];
+        a.plan = uvec2(0u);
+        vec2 p;
+        uint facing;
+        if (!position(id, a, p, facing) || any(lessThan(p, uView.xy)) || any(greaterThan(p, uView.zw))) continue;
+        uint slot  = atomicAdd(sVis, 1u);
+        sPos[slot] = p;
+        sTag[slot] = activity(a.st) | (legKind(a.st) << 4u) | (facing << 8u);
+        sId[slot]  = id;
+    }
+
+    barrier();
+    if (lid == 0u) {
+        // Global atomics on one address serialise across the whole GPU: skip them when possible.
+        sVisBase = sVis > 0u ? atomicAdd(drawCmd[0], sVis) : 0u;
+        if (uCollectStats != 0u)
+            for (uint i = 0u; i < 8u; ++i)
+                if (i != 6u && sCount[i] > 0u) atomicAdd(stats[i], sCount[i]); // [6] is left-behind (cumulative)
+    }
+    barrier();
+    for (uint i = lid; i < sVis; i += 256u) {
+        uint dst = sVisBase + i;
+        if (dst < uCapacity) visible[dst] = uvec4(floatBitsToUint(sPos[i]), sId[i], sTag[i]);
+    }
+}
+
+#endif
