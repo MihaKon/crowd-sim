@@ -1,8 +1,9 @@
 #version 460
-// A building's shadow on the ground, sun from the north-west: the footprint,
-// the footprint moved by the shadow vector, and each edge swept along it
-// (together: the convex hull). Drawn with the stencil test so overlapping
-// quads and shadows darken each pixel only once (see building_render.cpp).
+#include "frame.glsl"
+// A building's shadow on the ground, cast along the sun (frame.glsl): the footprint,
+// the footprint moved by the shadow vector, and each edge swept along it (together:
+// the convex hull). Drawn with the stencil test so overlapping quads and shadows
+// darken each pixel only once (see building_render.cpp).
 
 struct Building {
     vec2  origin;
@@ -25,7 +26,7 @@ void main() {
     vec2     q = kQuad[k % 6];
     vec2     A = b.axisAlong;
     vec2     I = vec2(-A.y, A.x) * ((b.info & 8u) != 0u ? -1.0 : 1.0);
-    vec2     s = vec2(0.55, -0.35) * b.height; // to the south-east
+    vec2     s = fSunDir.zw * b.height;
 
     vec2 c[4] = vec2[](b.origin, b.origin + A * b.sizeAlong, b.origin + A * b.sizeAlong + I * b.sizeIn,
                        b.origin + I * b.sizeIn);

@@ -114,7 +114,10 @@ void Selection::drawMarker(const Camera& cam, int fbW, int fbH, float sizePx) co
     glProgramUniform1f(markerProg_, 3, sizePx);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 16, selectBuf_);
     glBindVertexArray(vao_);
+    glEnable(GL_BLEND); // soft glow
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDisable(GL_BLEND);
 }
 
 void Selection::destroy() {

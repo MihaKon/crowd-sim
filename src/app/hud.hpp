@@ -19,10 +19,11 @@ struct HudInfo {
 // "1.2M", "845k", "37"
 std::string human(uint32_t v);
 
-// Top bar: clock, speed, where people are, cars, active layer, fps. Returns its height.
-float drawHud(Ui& ui, const App& a, const HudInfo& h);
-// Inspector panel under the bar; stores its rectangle in `a` so clicks on it don't pick.
+// Cards over the city: clock (top left), where people are (top right), the active
+// layer's legend (bottom left) and key hints (bottom right). Returns the bottom of
+// the clock card, where the inspector panel goes.
+float drawHud(Ui& ui, App& a, const HudInfo& h);
+// Inspector panel under the clock; stores its rectangle in `a` so clicks on it don't pick.
 void drawPanel(Ui& ui, App& a, const Panel& p, float top);
 // Breadcrumbs of the followed person / car, older dots fainter.
 void drawTrail(Ui& ui, const App& a, const std::vector<Vec2>& trail);
-void drawHelp(Ui& ui, const App& a);

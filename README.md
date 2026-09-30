@@ -8,13 +8,15 @@ Everything is written in C++20 and OpenGL 4.6 compute shaders. No game engine.
 
 ## What it does
 
-**A generated city.** Every seed gives a different 20 × 20 km city: a bay, an imperial palace in the middle, a ring rail line with radial lines, arterial roads, around 50 000 streets, 19 000 city blocks and over half a million buildings.
+**A generated city.** Every seed gives a different city: a bay, an imperial palace in the middle, arterial roads, rail, and streets, blocks and buildings down to the last house. **Its size follows the population** (about 12 500 people per km²): 1 million people get a 9 km town, 5 million a 20 × 20 km city with around 50 000 streets, 19 000 blocks and over half a million buildings, and 10 million a 28 km megacity (the largest size; beyond it the city only gets denser).
 
 **Districts.** The city is split into about 125 districts. The centre and the main rail hub are business districts full of glass towers. Industry sits along the bay. The rest is residential: ordinary housing, wealthy villa quarters with gardens (mostly west of the centre), and cramped poor districts that end up next to the factories.
 
 **People with a daily routine.** Every person has a home and, if they work, a job. They leave in the morning, walk, take the train or drive, spend the day at work, sometimes go shopping, and come back in the evening. Where you live decides a lot: people from poor districts are more often unemployed and work low-paid jobs in shops and factories, while people from wealthy districts mostly work well-paid jobs in the centre.
 
-**Trains.** Eight lines with real timetables (a ring line and cross-town line every 3 minutes, radial lines every 4 minutes, 05:00 to 23:30). Trains have limited capacity. At rush hour people get left behind on full platforms, and after a few missed trains they give up and walk.
+**Trains.** The rail network also depends on the population. Under 500 000 people there is no rail: people walk and drive. Up to 2 million there are one to three commuter lines every 6 minutes: a cross-town line with branches that meet it at an interchange. From 2 million up it's a metro: a ring line and a cross-town line every 3 minutes, and radial lines every 4 minutes (six of them at 5 million, more in bigger cities). All lines run on real timetables from 05:00 to 23:30. Trains have limited capacity. At rush hour people get left behind on full platforms, and after a few missed trains they give up and walk.
+
+**Taller cities.** Office towers in the business district grow with the population: about 11 floors at 1 million, 30 at 5 million, 45 at 10 million. How many people live or work in a block follows the floor area of its buildings, so a tower block holds far more people than a street of houses.
 
 **Traffic.** Car owners drive when the trip is long, and vans and taxis drive around all day. Streets have lanes, arterials have traffic lights, and cars queue behind each other. At rush hour the main roads really do jam.
 
@@ -22,7 +24,7 @@ Everything is written in C++20 and OpenGL 4.6 compute shaders. No game engine.
 
 **Layers for the big picture.** Zoomed out, individual people are just noise, so they fade out and a layer takes over: a density map of where people are, or a traffic map where every lane is coloured from free-flowing green to jammed red.
 
-**Day and night.** Buildings are drawn in 2.5D with walls, windows and shadows. After dusk the windows light up.
+**A city that looks alive.** The sun moves across the sky: shadows swing from west to east and stretch long in the evening, the light turns golden at sunset, and at night the city switches on: street lamps, lit windows (homes in the evening, offices after work), car headlights, glowing trains and blinking warning lights on the towers. Houses have pitched tiled roofs, towers are glass, flat roofs carry air-conditioning units, parks and villa gardens are full of trees, the palace sits in its moat, the bay has shallows and surf, and farmland fades into haze around the city. Zoomed out, it all turns into a clean map.
 
 ## Controls
 
@@ -41,22 +43,25 @@ Everything is written in C++20 and OpenGL 4.6 compute shaders. No game engine.
 | `H` | hide the UI |
 | `M` / `A` | toggle map / people and cars |
 | `L` / `V` | toggle level of detail / vsync |
+| `Q` | full resolution (by default large windows render about 1080p worth of pixels and upscale) |
 | `[` / `]` | point size |
 
-Run it as `./build/crowd_sim [people] [seed]`, for example `./build/crowd_sim 5e6 42`. The defaults are 1 million people and seed 1.
+Run it as `./build/crowd_sim [people] [seed]`, for example `./build/crowd_sim 5e6 42`. The defaults are 1 million people and seed 1. The number of people decides the size of the city, its rail network and how tall it gets.
 
 ## How it works
 
 ### Generating the city
 
-The generator is plain C++ and runs on the CPU in about two seconds.
+The generator is plain C++ and runs on the CPU: about half a second for 1 million people, two seconds for 5 million, five for the largest city.
 
-1. **Rail first.** A ring of hubs around the centre gets a ring line, a cross-town line through the middle and radial lines towards the edges. Stations are placed along them.
+0. **The plan.** The population sets the size of the map, the number of hubs, the kind of rail and the height of the towers. The generator's distances are tuned for 5 million people on 20 km and scale from there. At 5 million people a seed gives exactly the same streets as it always did.
+1. **Rail first.** A ring of hubs around the centre gets a ring line, a cross-town line through the middle and radial lines towards the edges (smaller cities get commuter lines instead, or no rail). Stations are placed along them.
 2. **Density.** A density field is built from the hubs, the stations and the city centre, plus some noise. It decides how dense the streets get.
 3. **Streets.** Street junctions are scattered with a variable-radius Poisson disk (dense near stations, sparse in the outskirts), and streets are the edges of their Gabriel graph. Arterial roads are inserted first, so they end up as continuous roads. Then triangles are merged into quads, sharp angles are removed and only the largest connected part is kept.
 4. **Blocks.** Blocks are the faces of this planar street graph.
 5. **Districts.** District seeds sit on a jittered grid, and each block joins the nearest one. Business and industry come from geography. For the rest I compute a "prestige" score and rank the districts by it: the top becomes wealthy, the bottom poor.
-6. **Buildings.** Lots are placed along the inside of every block, ring after ring. Each lot is checked against its neighbours (separating axis test) and the real streets, so nothing overlaps.
+6. **Buildings.** Lots are placed along the inside of every block, ring after ring. Each lot is checked against its neighbours (separating axis test), the real streets and the rail (tracks, platforms and station squares), so nothing overlaps.
+7. **Trees.** Street trees line the arterials, parks get groves and open lawns, and gardens get trees wherever a block has free ground, most of all in the villa districts. The palace gets its halls in a clearing in its park.
 
 ### Simulating people on the GPU
 
@@ -75,10 +80,15 @@ This is the part that makes millions of people possible:
 
 ### Drawing
 
+Everything is drawn procedurally: there is no texture except a small noise texture and the font.
+
+- **Light.** One uniform block per frame carries the sun (direction, colour, elevation), the sky light and the time of day to every shader. The world is drawn in linear HDR; one full-screen pass then adds bloom (only when there are lights to bloom), tone maps it (ACES), grades it (warm at sunset, cool at night) and anti-aliases it (FXAA folded into the same pass).
+- **Ground.** Countryside, blocks, water and shore are shaded from the world position: fields with hedgerows, gardens, lawns, paving and yards, all from a mipmapped noise texture so nothing shimmers when zoomed out. The shallows come from a distance-to-shore field computed once on the CPU. Fine detail fades out with the zoom, and so does its cost.
+- **Procedural streets.** Streets are drawn by a shader that knows each pixel's position along and across the street. That's how it draws sidewalks, kerbs, lane markings (Japanese style, driving on the left), zebra crossings, stop lines and, at night, the pools of light under the street lamps, at any angle. Zoomed out, the same shader draws clean map lines.
+- **Buildings.** Each building is one 32-byte record, and the vertex shader turns it into walls and a roof (pitched on houses, flat with rooftop units on the rest). The fragment shader lights them by the sun and draws the windows, a share of which light up at night depending on the hour. Zoomed out, a cheaper version with two walls and a flat roof takes over. Shadows are cast along the sun with the stencil buffer, so overlapping shadows don't get darker, and only the skylight is left in them, so they are bluish by day and warm at sunset.
+- **Trees, people, cars and trains** are shaded shapes too: domed tree crowns, people with shoulders, head and swinging arms, cars with windscreens, lights and headlight beams at night, and trains of ten carriages whose roof shows how full they are.
 - **Level of detail.** Only people and cars that are on screen, outdoors and within the level-of-detail budget are collected into a list, which is drawn with an indirect draw call. Zooming in only ever adds people, so nothing flickers.
-- **Procedural streets.** Streets are drawn by a shader that knows each pixel's position along and across the street. That's how it draws sidewalks, lane markings (Japanese style, driving on the left), zebra crossings and stop lines at any angle without a single texture.
-- **Buildings.** Each building is one 32-byte record, and the shader turns it into walls and a roof. Roofs are tiles from the Kenney pixel-art pack, walls get procedural windows, and shadows use the stencil buffer so overlapping shadows don't get darker.
-- **People sprites.** People are Kenney sprites that face the direction they walk. Cars are small top-down pixel-art sprites generated in code.
+- **Layers and UI.** The data layers and the selection marker are corrected for the tone mapping, so their colours are the same by day and by night. The UI draws rounded, anti-aliased cards with soft shadows from signed distances.
 
 ### The inspector
 
@@ -91,9 +101,9 @@ This is the part that makes millions of people possible:
 src/
   main.cpp      window and startup
   app/          app state, input, HUD, the frame loop
-  city/         city generator (rail, streets, districts, buildings) and the tables for the GPU
+  city/         city generator (rail, streets, districts, buildings, trees) and the tables for the GPU
   sim/          GPU simulation of people and traffic
-  render/       map, streets, buildings, sprites, density map
+  render/       lighting and post effects, map, streets, buildings, trees, density map
   ui/           text rendering, picking, inspector
   core/         math, camera, colours, OpenGL helpers
 shaders/        GLSL compute and render shaders
@@ -102,11 +112,10 @@ tools/          map_preview: exports a generated city as SVG, no GPU needed
 
 ## Credits
 
-- Pixel art: [Kenney](https://kenney.nl) "RPG Urban Pack" (CC0)
 - Font: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL)
-- [stb_image and stb_truetype](https://github.com/nothings/stb) by Sean Barrett (public domain)
+- [stb_truetype](https://github.com/nothings/stb) by Sean Barrett (public domain)
 - [GLFW](https://www.glfw.org) and [glad](https://github.com/Dav1dde/glad)
-- Colours: [Tokyo Night](https://github.com/enkia/tokyo-night-vscode-theme)
+- Tone mapping: the ACES fit by Krzysztof Narkowicz; bloom after Jorge Jimenez's "Next Generation Post Processing in Call of Duty: Advanced Warfare"; FXAA after Timothy Lottes
 
 ---
 
@@ -120,7 +129,7 @@ tools/          map_preview: exports a generated city as SVG, no GPU needed
 - **Python 3 with Jinja2** (glad generates the OpenGL loader at configure time)
 - **Git** and an internet connection for the first configure
 
-Everything else is downloaded automatically into `build/third_party/` on the first configure, from pinned URLs: glad, the stb headers, the JetBrains Mono font and the Kenney sprite sheet.
+Everything else is downloaded automatically into `build/third_party/` on the first configure, from pinned URLs: glad, the stb_truetype header and the JetBrains Mono font.
 
 **Arch Linux**
 ```sh
@@ -152,7 +161,7 @@ Shaders are loaded from the source tree at runtime, so after changing a shader y
 
 ### Useful to know
 
-- `./build/map_preview <seed> city.svg` writes a generated city as an SVG. It's the fastest way to work on the generator.
+- `./build/map_preview <seed> city.svg [people]` writes a generated city as an SVG (1 million people by default). It's the fastest way to work on the generator.
 - The simulation prints one status line per second with GPU timings of each pass (sim, cull, cars, map, draw), which is handy for profiling.
 - The number of people is limited by the largest shader storage buffer your driver allows. If you ask for too many, the app tells you and uses the maximum instead.
 - The generator is deterministic: the same seed always gives the same city, down to every building.

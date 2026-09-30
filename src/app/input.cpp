@@ -85,6 +85,7 @@ void onKey(GLFWwindow* w, int key, int, int action, int) {
         break;
     case GLFW_KEY_P:     a.randomPick = true; break;
     case GLFW_KEY_H:     a.showUi = !a.showUi; break;
+    case GLFW_KEY_Q:     a.fullRes = !a.fullRes; break;
     case GLFW_KEY_D:     a.heatMode = nextLayer(a.heatMode); break;
     case GLFW_KEY_SPACE: a.paused = !a.paused; break;
     case GLFW_KEY_V:

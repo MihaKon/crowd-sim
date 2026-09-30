@@ -7,11 +7,19 @@
 namespace {
 
 constexpr int   kTiles       = 16;
-constexpr float kMinZoomPpm  = 1.0f;
-constexpr int   kVerts       = 78;   // must match buildings.vert: 4 walls + 9 roof cells, 6 each
-constexpr int   kShadowVerts = 36;   // must match building_shadow.vert
-constexpr float kLean        = 0.5f; // roof lift per metre of height, must match the shaders
+constexpr float kFadeFrom    = 0.30f; // px per metre: buildings fade in between these zoom levels
+constexpr float kFadeTo      = 0.45f;
+constexpr float kLiteBelow   = 1.6f;  // px per metre: below it, the cheap version (2 walls, flat roof)
+constexpr int   kVerts       = 36;    // must match buildings.vert: 4 walls + 2 roof quads, 6 each
+constexpr int   kLiteVerts   = 18;    //   lite: the 2 visible walls + 1 roof quad
+constexpr int   kShadowVerts = 36;    // must match building_shadow.vert
+constexpr float kLean        = 0.42f; // roof lift per metre of height, must match buildings.vert
 constexpr float kFloorHeight = 3.0f;
+constexpr float kMaxShadow   = 3.2f;  // longest shadow per metre of height, see lighting.cpp
+
+// Towers above 50 m lean less than their height would say, so they do not cover
+// whole blocks (must match lifted() in buildings.vert).
+float lifted(float h) { return h < 50.0f ? h : 50.0f + (h - 50.0f) * 0.55f; }
 
 // std430 layout, must match buildings.vert / building_shadow.vert
 struct Gpu {
@@ -23,7 +31,7 @@ struct Gpu {
 };
 static_assert(sizeof(Gpu) == 32);
 
-enum Loc : GLint { kCenter = 0, kScale, kPpm, kNight };
+enum Loc : GLint { kCenter = 0, kScale, kPpm, kLite, kFade, kShadowStrength };
 
 } // namespace
 
@@ -69,13 +77,13 @@ void BuildingRenderer::upload(const CityMap& map) {
                 const Gpu& g = it.g;
                 const Vec2 o{g.ox, g.oy}, a{g.ax, g.ay};
                 const Vec2 in = perp(a) * ((g.info & 8u) ? -1.0f : 1.0f);
-                // Footprint, lifted roof (+y) and shadow (+x, -y) all count for culling.
-                const float lift = g.height * kLean;
+                // Footprint, lifted roof (+y) and the shadow (any direction, with the sun) all count.
+                const float lift = lifted(g.height + 4.0f) * kLean, shadow = g.height * kMaxShadow;
                 for (Vec2 p : {o, o + a * g.sizeAlong, o + in * g.sizeIn, o + a * g.sizeAlong + in * g.sizeIn}) {
-                    r.minX = std::min(r.minX, p.x);
-                    r.minY = std::min(r.minY, p.y - g.height * 0.35f);
-                    r.maxX = std::max(r.maxX, p.x + g.height * 0.55f);
-                    r.maxY = std::max(r.maxY, p.y + lift);
+                    r.minX = std::min(r.minX, p.x - shadow);
+                    r.minY = std::min(r.minY, p.y - shadow);
+                    r.maxX = std::max(r.maxX, p.x + shadow);
+                    r.maxY = std::max(r.maxY, p.y + std::max(lift, shadow));
                 }
                 all.push_back(g);
             }
@@ -89,7 +97,7 @@ void BuildingRenderer::upload(const CityMap& map) {
 }
 
 bool BuildingRenderer::collect(const Camera& cam, int fbW, int fbH, int vertsPerBuilding) const {
-    if (cam.ppm < kMinZoomPpm || ranges_.empty()) return false;
+    if (cam.ppm < kFadeFrom || ranges_.empty()) return false;
     const float hw = 0.5f * float(fbW) / cam.ppm, hh = 0.5f * float(fbH) / cam.ppm;
     const float x0 = cam.cx - hw, x1 = cam.cx + hw, y0 = cam.cy - hh, y1 = cam.cy + hh;
     firsts_.clear();
@@ -102,36 +110,49 @@ bool BuildingRenderer::collect(const Camera& cam, int fbW, int fbH, int vertsPer
     return !firsts_.empty();
 }
 
-void BuildingRenderer::drawShadows(const Camera& cam, int fbW, int fbH) const {
-    if (!collect(cam, fbW, fbH, kShadowVerts)) return;
+void BuildingRenderer::drawShadows(const Camera& cam, int fbW, int fbH, float strength) const {
+    const float fade = std::clamp((cam.ppm - kFadeFrom) / (kFadeTo - kFadeFrom), 0.0f, 1.0f);
+    if (strength * fade <= 0.01f || !collect(cam, fbW, fbH, kShadowVerts)) return;
     glUseProgram(shadowProg_);
     glProgramUniform2f(shadowProg_, kCenter, cam.cx, cam.cy);
     glProgramUniform2f(shadowProg_, kScale, 2.0f * cam.ppm / float(fbW), 2.0f * cam.ppm / float(fbH));
+    glProgramUniform1f(shadowProg_, kShadowStrength, strength * fade);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, ssbo_);
     glBindVertexArray(vao_);
 
-    // Each pixel darkened once: pass only where the stencil is still 0, then mark it.
+    // Multiply the ground by the shadow tint, each pixel once: pass only where the
+    // stencil is still 0, then mark it.
     glClear(GL_STENCIL_BUFFER_BIT);
     glEnable(GL_STENCIL_TEST);
     glStencilFunc(GL_EQUAL, 0, 0xFF);
     glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
     glMultiDrawArrays(GL_TRIANGLES, firsts_.data(), counts_.data(), GLsizei(firsts_.size()));
     glDisable(GL_BLEND);
     glDisable(GL_STENCIL_TEST);
 }
 
-void BuildingRenderer::draw(const Camera& cam, int fbW, int fbH, float night) const {
-    if (!collect(cam, fbW, fbH, kVerts)) return;
+void BuildingRenderer::draw(const Camera& cam, int fbW, int fbH) const {
+    const bool lite  = cam.ppm < kLiteBelow;
+    const int  verts = lite ? kLiteVerts : kVerts;
+    if (!collect(cam, fbW, fbH, verts)) return;
+    const float fade = std::clamp((cam.ppm - kFadeFrom) / (kFadeTo - kFadeFrom), 0.0f, 1.0f);
     glUseProgram(prog_);
     glProgramUniform2f(prog_, kCenter, cam.cx, cam.cy);
     glProgramUniform2f(prog_, kScale, 2.0f * cam.ppm / float(fbW), 2.0f * cam.ppm / float(fbH));
     glProgramUniform1f(prog_, kPpm, cam.ppm);
-    glProgramUniform1f(prog_, kNight, night);
+    glProgramUniform1i(prog_, kLite, lite ? 1 : 0);
+    glProgramUniform1f(prog_, kFade, fade);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 19, ssbo_);
     glBindVertexArray(vao_);
+    // Records are in painter's order (north to south), so fading in with blending works.
+    if (fade < 1.0f) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
     glMultiDrawArrays(GL_TRIANGLES, firsts_.data(), counts_.data(), GLsizei(firsts_.size()));
+    glDisable(GL_BLEND);
 }
 
 void BuildingRenderer::destroy() {

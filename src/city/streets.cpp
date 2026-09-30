@@ -17,7 +17,7 @@ std::vector<std::vector<Vec2>> planArterials(const Field& f, Vec2 C, float R, Rn
     std::vector<std::vector<Vec2>> out;
     auto usable = [&](Vec2 p) { return inside(p, f.size) && !f.water(p); };
 
-    const int   nRad = 10 + rng.below(4);
+    const int   nRad = std::max(6, int(std::lround(10.0f * std::sqrt(f.scale)))) + rng.below(4);
     const float rot  = rng.uni(0.0f, 2.0f * kPi);
     for (int i = 0; i < nRad; ++i) {
         const float a   = rot + 2.0f * kPi * float(i) / float(nRad) + rng.uni(-0.15f, 0.15f);

@@ -29,10 +29,16 @@ enum TrainLoc : GLint {
 constexpr uint32_t kDayMs = 24u * 3600u * 1000u;
 constexpr uint32_t kResetAt = 3u * 3600u * 1000u; // 03:00
 
+// Never empty (no rail: no train slots); short data is copied, not over-read.
 GLuint makeBuffer(GLsizeiptr bytes, const void* data, GLbitfield flags = 0) {
     GLuint b = 0;
     glCreateBuffers(1, &b);
-    glNamedBufferStorage(b, std::max<GLsizeiptr>(bytes, 16), data, flags);
+    if (bytes >= 16) {
+        glNamedBufferStorage(b, bytes, data, flags);
+    } else {
+        glNamedBufferStorage(b, 16, nullptr, flags | GL_DYNAMIC_STORAGE_BIT);
+        if (data && bytes > 0) glNamedBufferSubData(b, 0, bytes, data);
+    }
     return b;
 }
 
@@ -194,7 +200,10 @@ void Agents::draw(const Camera& cam, int fbW, int fbH, float pointSize) const {
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, visible_);
     glUseProgram(draw_);
     glBindVertexArray(vao_);
+    glEnable(GL_BLEND); // soft edges and shadows
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArraysIndirect(GL_POINTS, nullptr);
+    glDisable(GL_BLEND);
 }
 
 void Agents::drawTrains(const Camera& cam, int fbW, int fbH, uint32_t nowMs) const {
@@ -207,7 +216,10 @@ void Agents::drawTrains(const Camera& cam, int fbW, int fbH, uint32_t nowMs) con
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 6, occupancy_);
     glUseProgram(trainProg_);
     glBindVertexArray(trainVao_);
+    glEnable(GL_BLEND); // anti-aliased carriage ends
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDrawArraysInstanced(GL_TRIANGLES, 0, 6, GLsizei(slotCount_));
+    glDisable(GL_BLEND);
 }
 
 AgentRaw Agents::readAgent(uint32_t id) const {

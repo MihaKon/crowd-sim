@@ -13,12 +13,13 @@
 namespace citygen {
 
 
-// Seeds on a jittered 1.6 km grid; each block joins the nearest seed, so borders
+// Seeds on a jittered grid (1.6 km at scale 1); each block joins the nearest seed, so borders
 // follow streets. Business near the centre / main hub, industry by the bay; the rest
 // is ranked by a prestige score (ring around the centre, west side, noise, minus
 // nearby industry and water): top 14% wealthy, bottom 16% poor.
 void buildDistricts(CityMap& m, const Field& f, Vec2 C, float R, const std::vector<Vec2>& hubs, Rng& rng) {
-    const float step = 1600.0f;
+    const float step = 1600.0f * std::sqrt(f.scale);
+    const float zone = std::max(f.scale, 0.4f);
     const int   n    = int(m.size / step);
     for (int gy = 0; gy < n; ++gy)
         for (int gx = 0; gx < n; ++gx) {
@@ -40,8 +41,9 @@ void buildDistricts(CityMap& m, const Field& f, Vec2 C, float R, const std::vect
     for (size_t i = 0; i < m.districts.size(); ++i) {
         District& d  = m.districts[i];
         const float dc = length(d.seed - C);
-        if ((dc < 0.55f * R) || (!hubs.empty() && length(d.seed - hubs[0]) < 1300.0f)) d.kind = DistrictKind::Business;
-        else if ((nearWater(d.seed, 1400.0f) && rng.uni() < 0.75f) || (dc > 1.9f * R && rng.uni() < 0.10f))
+        const bool nearHub = !hubs.empty() && length(d.seed - hubs[0]) < 1300.0f * zone;
+        if (dc < 0.55f * R || nearHub) d.kind = DistrictKind::Business;
+        else if ((nearWater(d.seed, 1400.0f * zone) && rng.uni() < 0.75f) || (dc > 1.9f * R && rng.uni() < 0.10f))
             d.kind = DistrictKind::Industrial;
         else open.push_back(i);
     }
@@ -53,11 +55,11 @@ void buildDistricts(CityMap& m, const Field& f, Vec2 C, float R, const std::vect
         float nearestIndustry = kInf;
         for (const District& o : m.districts)
             if (o.kind == DistrictKind::Industrial) nearestIndustry = std::min(nearestIndustry, length(o.seed - p));
-        float prestige = 0.6f * fbm(p * (1.0f / 5000.0f), f.seed + 71u);
+        float prestige = 0.6f * fbm(p * (1.0f / (5000.0f * f.scale)), f.seed + 71u);
         prestige += 0.25f * std::clamp(1.0f - std::abs(dc - 1.1f * R) / (1.2f * R), 0.0f, 1.0f);
         prestige += 0.15f * dot(normalize(p - C), normalize(Vec2{-1.0f, 0.3f}));
-        prestige -= 0.40f * std::clamp(1.0f - nearestIndustry / 2500.0f, 0.0f, 1.0f);
-        prestige -= nearWater(p, 1200.0f) ? 0.2f : 0.0f;
+        prestige -= 0.40f * std::clamp(1.0f - nearestIndustry / (2500.0f * zone), 0.0f, 1.0f);
+        prestige -= nearWater(p, 1200.0f * zone) ? 0.2f : 0.0f;
         ranked.emplace_back(prestige, i);
     }
     std::sort(ranked.begin(), ranked.end());
@@ -233,7 +235,7 @@ void nameStations(CityMap& m, Rng& rng) {
     for (size_t l = 0; l < m.lines.size(); ++l) {
         RailLine& line = m.lines[l];
         if (line.loop) line.name = "Ring Line";
-        else if (l == 1) line.name = "Chuo Line";
+        else if (line.crossTown) line.name = "Chuo Line";
         else if (line.stations.empty()) line.name = "Line " + std::to_string(l);
         else line.name = m.stations[line.stations.back()].name + " Line";
     }

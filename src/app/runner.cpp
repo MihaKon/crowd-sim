@@ -1,4 +1,5 @@
 #include "app/runner.hpp"
+#include <cstdlib>
 
 #include "core/palette.hpp"
 
@@ -14,15 +15,10 @@ double elapsedMs(std::chrono::steady_clock::time_point since) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
 }
 
-float channel(uint32_t hex, int shift) { return float((hex >> shift) & 0xFFu) / 255.0f; }
 
-// 0 by day, 1 by night; dusk 18:00-19:30, dawn 04:30-06:00.
-float nightFactor(double simMs) {
-    const float m = float((uint64_t(simMs) + Agents::kDayOffset) % 86'400'000) / 60000.0f;
-    return m >= 1080.0f ? std::min((m - 1080.0f) / 90.0f, 1.0f)
-         : m < 270.0f   ? 1.0f
-         : m < 360.0f   ? 1.0f - (m - 270.0f) / 90.0f
-                        : 0.0f;
+// Clock time in minutes, 0..1440.
+float dayMinutes(double simMs) {
+    return float((uint64_t(simMs) + Agents::kDayOffset) % 86'400'000) / 60000.0f;
 }
 
 } // namespace
@@ -32,11 +28,14 @@ Runner::Runner(GLFWwindow* win, App& app, GLuint agentCount) : win_(win), a_(app
     map_.init(dir);
     roads_.init(dir);
     buildings_.init(dir);
+    trees_.init(dir);
     agents_.init(dir);
     traffic_.init(dir);
     selection_.init(dir);
     heat_.init(dir);
-    sprites_.init(SPRITE_ATLAS_PATH);
+    frame_.init();
+    noise_.init();
+    post_.init(dir);
     float sx = 1.0f, sy = 1.0f;
     glfwGetWindowContentScale(win_, &sx, &sy);
     ui_.init(dir, FONT_PATH, std::round(15.0f * sx));
@@ -47,16 +46,21 @@ Runner::Runner(GLFWwindow* win, App& app, GLuint agentCount) : win_(win), a_(app
     mapTimer_.init();
     buildTimer_.init();
     drawTimer_.init();
+    postTimer_.init();
 }
 
 Runner::~Runner() {
     mapTimer_.destroy();
     buildTimer_.destroy();
     drawTimer_.destroy();
+    postTimer_.destroy();
+    post_.destroy();
+    noise_.destroy();
+    frame_.destroy();
     ui_.destroy();
     buildings_.destroy();
+    trees_.destroy();
     roads_.destroy();
-    sprites_.destroy();
     heat_.destroy();
     selection_.destroy();
     traffic_.destroy();
@@ -66,13 +70,18 @@ Runner::~Runner() {
 
 void Runner::rebuildWorld() {
     auto t0     = Clock::now();
-    city_       = generateCity(a_.seed, kWorldSize);
+    city_       = generateCity(a_.seed, planCity(count_));
     const double genMs = elapsedMs(t0);
+    if (a_.worldSize != city_.size) {
+        a_.worldSize = city_.size;
+        resetCamera(a_);
+    }
 
     t0 = Clock::now();
     map_.upload(city_);
     roads_.upload(city_);
     buildings_.upload(city_);
+    trees_.upload(city_);
     agents_.setWorld(city_);
     agents_.reset(count_, a_.seed);
     const double upMs = elapsedMs(t0);
@@ -89,7 +98,10 @@ void Runner::rebuildWorld() {
     const TrafficWorld& tw = traffic_.world();
     size_t              kinds[5] = {};
     for (const District& d : city_.districts) ++kinds[int(d.kind)];
+    static const char* kTransit[] = {"no rail", "commuter rail", "metro"};
+    const CityPlan&    plan       = city_.plan;
     std::printf("\ncity seed %u: generated in %.0f ms, tables + upload %.0f ms\n"
+                "  plan: %.1f km for %u people, %s (%d lines planned), towers up to %.0f floors\n"
                 "  %zu nodes, %zu streets, %zu blocks, %u stations on %u lines, sim tables %.1f MB\n"
                 "  trains: %zu slots, %u trips/day, %u passengers per train\n"
                 "  districts: %zu (business %zu, residential %zu, wealthy %zu, poor %zu, industrial %zu)\n"
@@ -97,7 +109,9 @@ void Runner::rebuildWorld() {
                 "  buildings: %zu\n"
                 "  traffic: %u lanes (%u car slots), %u signals, %u routing regions, tables %.0f ms\n"
                 "  cars: %u private (every %u. agent), %u vans/taxis\n",
-                a_.seed, genMs, upMs, city_.nodes.size(), city_.edges.size(), city_.blocks.size(), w.stationCount,
+                a_.seed, genMs, upMs, double(plan.size) / 1000.0, plan.population, kTransit[int(plan.transit)],
+                plan.lines, double(plan.towerFloors), city_.nodes.size(), city_.edges.size(), city_.blocks.size(),
+                w.stationCount,
                 w.lineCount, double(w.data.size()) * 4.0 / (1 << 20), w.trainSlots.size() / 2, w.occupancyCount,
                 agents_.trainCapacity(), city_.districts.size(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4],
                 w.workByPay[0], w.workByPay[1], w.workByPay[2], city_.buildings.size(), tw.laneCount, tw.queueSize,
@@ -128,6 +142,7 @@ void Runner::run() {
         const auto  now = Clock::now();
         const float dt  = std::min(std::chrono::duration<float>(now - prev).count(), 0.05f);
         prev            = now;
+        realSeconds_ += dt;
 
         updateFollow(dt);
         const bool     statTick = std::chrono::duration<float>(now - statStart_).count() >= 1.0f;
@@ -197,7 +212,7 @@ Runner::StepPlan Runner::planSteps(float dt) const {
 // At city scale people and cars are noise: they are hidden halfway through the
 // zoom-out and the active layer fades in around that point, so they never overlap.
 Runner::Layers Runner::chooseLayers() const {
-    const float fullPpm   = float(std::min(a_.fbW, a_.fbH)) / kWorldSize;
+    const float fullPpm   = float(std::min(a_.fbW, a_.fbH)) / a_.worldSize;
     const float zoomedOut = 1.0f - std::clamp((a_.cam.ppm - 1.6f * fullPpm) / (3.4f * fullPpm), 0.0f, 1.0f);
     const float fade      = std::clamp((zoomedOut - 0.35f) / 0.3f, 0.0f, 1.0f);
     Layers      l;
@@ -213,9 +228,9 @@ GLuint Runner::lodStride(uint32_t outdoor, GLuint count, double budgetScale) con
     if (!a_.lod) return 1;
     const float  hw = 0.5f * float(a_.fbW) / a_.cam.ppm;
     const float  hh = 0.5f * float(a_.fbH) / a_.cam.ppm;
-    const float  w = std::max(0.0f, std::min(a_.cam.cx + hw, kWorldSize) - std::max(a_.cam.cx - hw, 0.0f));
-    const float  h = std::max(0.0f, std::min(a_.cam.cy + hh, kWorldSize) - std::max(a_.cam.cy - hh, 0.0f));
-    const double visible = double(outdoor) * double(w) * double(h) / double(kWorldSize * kWorldSize);
+    const float  w = std::max(0.0f, std::min(a_.cam.cx + hw, a_.worldSize) - std::max(a_.cam.cx - hw, 0.0f));
+    const float  h = std::max(0.0f, std::min(a_.cam.cy + hh, a_.worldSize) - std::max(a_.cam.cy - hh, 0.0f));
+    const double visible = double(outdoor) * double(w) * double(h) / (double(a_.worldSize) * double(a_.worldSize));
     const double budget  = budgetScale * kCoverage * double(a_.fbW) * double(a_.fbH) / double(a_.pointSize * a_.pointSize);
     GLuint       s       = 1;
     while (visible / s > budget && s < count) s <<= 1;
@@ -327,32 +342,36 @@ void Runner::refreshInspector(Clock::time_point now) {
     }
 }
 
-// Draw order: ground, streets, rail, shadows; cars and people; buildings over
-// them (tall ones hide the street behind); overlays; marker; UI.
+// Draw order, into the HDR scene: ground (countryside, water, blocks), streets, rail
+// and stations, shadows, trees; cars and people; buildings over them (tall ones hide
+// the street behind); data layers, trains; marker. Then PostFx (bloom, tone mapping,
+// anti-aliasing) into the window, and the UI on top.
 void Runner::render(const Layers& layers) {
-    glClearColor(channel(palette::kBackground, 16), channel(palette::kBackground, 8),
-                 channel(palette::kBackground, 0), 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    const Lighting light = lightingAt(dayMinutes(simMs_));
+    post_.beginScene(a_.fbW, a_.fbH, a_.fullRes, light.haze);
+    frame_.update(light, dayMinutes(simMs_), float(realSeconds_), a_.cam.ppm, post_.renderScale());
+    noise_.bind();
 
     if (a_.showMap) {
         mapTimer_.begin();
         map_.draw(a_.cam, a_.fbW, a_.fbH, MapRenderer::kGround);
         roads_.draw(a_.cam, a_.fbW, a_.fbH);
         map_.draw(a_.cam, a_.fbW, a_.fbH, MapRenderer::kOverlay);
-        buildings_.drawShadows(a_.cam, a_.fbW, a_.fbH);
+        const float shadows = std::clamp(light.elevation * 8.0f, 0.0f, 1.0f);
+        buildings_.drawShadows(a_.cam, a_.fbW, a_.fbH, shadows);
+        trees_.drawShadows(a_.cam, a_.fbW, a_.fbH, shadows);
+        trees_.draw(a_.cam, a_.fbW, a_.fbH);
         mapTimer_.end();
     }
     if (a_.showAgents) {
         drawTimer_.begin();
-        sprites_.bind(0);
-        traffic_.draw(a_.cam, a_.fbW, a_.fbH);
+        traffic_.draw(a_.cam, a_.fbW, a_.fbH, light.lamps);
         agents_.draw(a_.cam, a_.fbW, a_.fbH, a_.pointSize);
         drawTimer_.end();
     }
     if (a_.showMap) {
         buildTimer_.begin();
-        sprites_.bind(0);
-        buildings_.draw(a_.cam, a_.fbW, a_.fbH, nightFactor(simMs_));
+        buildings_.draw(a_.cam, a_.fbW, a_.fbH);
         buildTimer_.end();
     }
     if (a_.showAgents) {
@@ -363,7 +382,17 @@ void Runner::render(const Layers& layers) {
         agents_.drawTrains(a_.cam, a_.fbW, a_.fbH, uint32_t(simMs_));
         drawTimer_.end();
     }
-    if (a_.inspecting()) selection_.drawMarker(a_.cam, a_.fbW, a_.fbH, 18.0f * pixelRatio(win_));
+    if (a_.inspecting()) selection_.drawMarker(a_.cam, a_.fbW, a_.fbH, 30.0f * pixelRatio(win_));
+
+    postTimer_.begin();
+    PostFx::Params fx;
+    fx.exposure = light.exposure;
+    fx.warmth   = light.golden;
+    fx.night    = light.night;
+    fx.bloom    = 0.9f * std::max(light.lamps, 0.4f * light.golden); // lights and low sun; 0 skips it by day
+    post_.finish(fx);
+    postTimer_.end();
+
     if (a_.showUi) {
         ui_.begin(a_.fbW, a_.fbH);
         if (a_.inspecting()) drawTrail(ui_, a_, trail_);
@@ -374,7 +403,6 @@ void Runner::render(const Layers& layers) {
         hud_.stats        = stats_;
         const float top   = drawHud(ui_, a_, hud_);
         if (a_.inspecting()) drawPanel(ui_, a_, panel_, top);
-        drawHelp(ui_, a_);
         ui_.end();
     }
 }
@@ -386,11 +414,12 @@ void Runner::logStats(Clock::time_point now) {
     stats_                    = agents_.readStats();
     const uint32_t left       = stats_.leftBehind - leftBefore;
     const uint64_t tod        = (uint64_t(simMs_) + Agents::kDayOffset) / 60000 % 1440;
-    std::printf("%02u:%02u %4.0f fps %5.2f ms | sim %5.2f cull %5.2f cars %5.2f map %5.2f draw %5.2f | "
+    std::printf("%02u:%02u %4.0f fps %5.2f ms | sim %5.2f cull %5.2f cars %5.2f map %5.2f draw %5.2f post %5.2f | "
                 "walk %s wait %s train %s full %s | cars %s stopped %s | home %s work %s | x%g%s%s%s\n",
                 unsigned(tod / 60), unsigned(tod % 60), double(statFrames_) / elapsed, 1000.0 * elapsed / statFrames_,
                 passMs_[0], passMs_[1], trafficMs_, mapTimer_.takeAverage() + buildTimer_.takeAverage(),
-                drawTimer_.takeAverage(), human(stats_.walking).c_str(), human(stats_.waiting).c_str(),
+                drawTimer_.takeAverage(), postTimer_.takeAverage(), human(stats_.walking).c_str(),
+                human(stats_.waiting).c_str(),
                 human(stats_.riding).c_str(), human(left).c_str(), human(stats_.carsOnRoad).c_str(),
                 human(stats_.carsStopped).c_str(), human(stats_.home).c_str(), human(stats_.work).c_str(),
                 double(a_.timeScale), a_.paused ? " paused" : "", a_.lod ? "" : " LOD-off",

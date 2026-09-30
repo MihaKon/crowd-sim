@@ -1,6 +1,7 @@
 #version 460
-// Bilinear density from the count grid, log scale around the average,
-// Tokyo Night colour ramp; sparse cells stay transparent.
+#include "frame.glsl"
+// Bilinear density from the count grid, log scale around the average, indigo to
+// coral; sparse cells stay transparent. The hottest spots glow a little.
 
 layout(std430, binding = 18) readonly buffer Heat { uint heat[]; };
 
@@ -18,18 +19,10 @@ float cell(ivec2 c) {
 }
 
 vec3 ramp(float t) {
-    const vec3 c0 = vec3(0.239, 0.349, 0.631); // #3d59a1
-    const vec3 c1 = vec3(0.478, 0.635, 0.969); // #7aa2f7
-    const vec3 c2 = vec3(0.733, 0.604, 0.969); // #bb9af7
-    const vec3 c3 = vec3(0.969, 0.463, 0.557); // #f7768e
-    const vec3 c4 = vec3(1.000, 0.620, 0.392); // #ff9e64
-    const vec3 c5 = vec3(0.878, 0.686, 0.408); // #e0af68
+    const uint k[6] = uint[](0x2f2f7au, 0x3a6fd8u, 0x36c0d2u, 0xf1d54cu, 0xf28c38u, 0xe8455au);
     t *= 5.0;
-    if (t < 1.0) return mix(c0, c1, t);
-    if (t < 2.0) return mix(c1, c2, t - 1.0);
-    if (t < 3.0) return mix(c2, c3, t - 2.0);
-    if (t < 4.0) return mix(c3, c4, t - 3.0);
-    return mix(c4, c5, min(t - 4.0, 1.0));
+    int i = min(int(t), 4);
+    return mix(overlayHex(k[i]), overlayHex(k[i + 1]), clamp(t - float(i), 0.0, 1.0));
 }
 
 float bilinear(vec2 g) {
@@ -48,5 +41,5 @@ void main() {
     float t = clamp(log(1.0 + v / max(uAverage, 1e-3)) / log(41.0), 0.0, 1.0);
     float a = smoothstep(0.02, 0.2, t) * uOpacity * 0.9;
     if (a < 0.003) discard;
-    fragColor = vec4(ramp(t), a);
+    fragColor = vec4(ramp(t) * (1.0 + 1.5 * smoothstep(0.75, 1.0, t)), a);
 }

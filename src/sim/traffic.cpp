@@ -25,7 +25,12 @@ enum DrawLoc : GLint { kDCenter = 0, kDScale, kDPpm, kDCapacity, kDOwnerCount };
 GLuint makeBuffer(GLsizeiptr bytes, const void* data) {
     GLuint b = 0;
     glCreateBuffers(1, &b);
-    glNamedBufferStorage(b, std::max<GLsizeiptr>(bytes, 16), data, 0);
+    if (bytes >= 16) {
+        glNamedBufferStorage(b, bytes, data, 0);
+    } else {
+        glNamedBufferStorage(b, 16, nullptr, GL_DYNAMIC_STORAGE_BIT);
+        if (data && bytes > 0) glNamedBufferSubData(b, 0, bytes, data);
+    }
     return b;
 }
 
@@ -51,6 +56,9 @@ void Traffic::init(const std::string& shaderDir) {
     commit_ = compute(shaderDir, "PASS_COMMIT");
     draw_   = gl::linkProgram({gl::compileShader(GL_VERTEX_SHADER, shaderDir + "/cars.vert"),
                                gl::compileShader(GL_FRAGMENT_SHADER, shaderDir + "/cars.frag")});
+    const std::string beams = "#define HEADLIGHTS\n";
+    beams_  = gl::linkProgram({gl::compileShader(GL_VERTEX_SHADER, shaderDir + "/cars.vert", beams),
+                               gl::compileShader(GL_FRAGMENT_SHADER, shaderDir + "/cars.frag", beams)});
     congestion_ = gl::linkProgram({gl::compileShader(GL_VERTEX_SHADER, shaderDir + "/congestion.vert"),
                                    gl::compileShader(GL_FRAGMENT_SHADER, shaderDir + "/congestion.frag")});
     glCreateVertexArrays(1, &vao_);
@@ -183,15 +191,25 @@ CarRaw Traffic::readCar(uint32_t car) const {
     return r;
 }
 
-void Traffic::draw(const Camera& cam, int fbW, int fbH) const {
-    glProgramUniform2f(draw_, kDCenter, cam.cx, cam.cy);
-    glProgramUniform2f(draw_, kDScale, 2.0f * cam.ppm / float(fbW), 2.0f * cam.ppm / float(fbH));
-    glProgramUniform1f(draw_, kDPpm, cam.ppm);
+void Traffic::draw(const Camera& cam, int fbW, int fbH, float lamps) const {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 15, visible_);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, visible_);
-    glUseProgram(draw_);
     glBindVertexArray(vao_);
-    glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+    glEnable(GL_BLEND);
+    for (GLuint prog : {beams_, draw_}) {
+        if (prog == beams_ && lamps <= 0.0f) continue;
+        glProgramUniform2f(prog, kDCenter, cam.cx, cam.cy);
+        glProgramUniform2f(prog, kDScale, 2.0f * cam.ppm / float(fbW), 2.0f * cam.ppm / float(fbH));
+        glProgramUniform1f(prog, kDPpm, cam.ppm);
+        glProgramUniform1ui(prog, kDCapacity, capacity_);
+        glProgramUniform1ui(prog, kDOwnerCount, ownerCount_);
+        // Beams light the road (added); cars go over it with soft edges and shadows.
+        if (prog == beams_) glBlendFunc(GL_ONE, GL_ONE);
+        else glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(prog);
+        glDrawArraysIndirect(GL_TRIANGLES, nullptr);
+    }
+    glDisable(GL_BLEND);
 }
 
 void Traffic::destroy() {
@@ -200,7 +218,7 @@ void Traffic::destroy() {
         deleteBuffer(*b);
     glDeleteProgram(congestion_);
     glDeleteVertexArrays(1, &vao_);
-    for (GLuint p : {spawn_, move_, commit_, draw_}) glDeleteProgram(p);
+    for (GLuint p : {spawn_, move_, commit_, draw_, beams_}) glDeleteProgram(p);
 }
 
 void Traffic::bind() const {

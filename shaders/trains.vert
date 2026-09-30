@@ -1,6 +1,8 @@
 #version 460
 #include "gpu_layout.h"
-// One instance per train slot; 6 vertices form a rectangle along the track.
+#include "frame.glsl"
+// One instance per train slot; 6 vertices form a rectangle along the track, split
+// into ten carriages in trains.frag.
 
 layout(std430, binding = 3) readonly buffer World     { uint W[]; };
 layout(std430, binding = 6) readonly buffer Occupancy { uint occupancy[]; };
@@ -17,9 +19,11 @@ layout(location = LOC_COUNTS) uniform uvec4 uCounts;
 layout(location = LOC_SEC)    uniform uint  uSec[SECTION_COUNT];
 layout(location = TRAINS_LOC_LINE_COLOR) uniform vec3 uLineColor[TRAIN_LINE_COLORS];
 
-out float      vAlong; // 0 = rear, 1 = front
+out float      vAlong;  // 0 = rear, 1 = front
+out float      vAcross; // -1 .. 1
 flat out float vLoad;
-flat out vec3  vColor;
+flat out vec3  vColor;  // linear
+flat out float vLen;    // metres on screen (may be exaggerated when zoomed out)
 
 #include "common.glsl"
 
@@ -31,9 +35,11 @@ void main() {
     uint  trip;
     if (!trainAt(aSlot.x, aSlot.y, uNow, arc, trip)) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // not running: discard
-        vAlong = 0.0;
-        vLoad  = 0.0;
-        vColor = vec3(0.0);
+        vAlong  = 0.0;
+        vAcross = 0.0;
+        vLoad   = 0.0;
+        vColor  = vec3(0.0);
+        vLen    = 0.0;
         return;
     }
     uint line = lineDirA(aSlot.x).w;
@@ -41,15 +47,17 @@ void main() {
     vec2 p = railPos(line, arc, tangent);
     if ((aSlot.x & 1u) == 1u) tangent = -tangent; // direction 1 runs towards decreasing arc
     vec2 side = vec2(-tangent.y, tangent.x);
-    p += side * 5.0; // keep left: one track per direction
+    p += side * 2.2; // keep left: one track per direction (kTrackGap / 2)
 
-    float len   = max(200.0, 14.0 / uPpm); // 10 cars, at least 14 px
-    float wid   = max(7.0, 5.0 / uPpm);
+    float len   = max(200.0, 14.0 / uPpm); // 10 cars of 20 m, at least 14 px
+    float wid   = max(2.95, 3.0 / uPpm);
     vec2  c     = kCorner[gl_VertexID];
     vec2  world = p + tangent * (c.x * len) + side * (c.y * wid);
 
     gl_Position = vec4((world - uCenter) * uScale, 0.0, 1.0);
     vAlong      = c.x + 0.5;
+    vAcross     = c.y * 2.0;
     vLoad       = clamp(float(occupancy[trip]) / float(uTrainCap), 0.0, 1.0);
-    vColor      = uLineColor[line % uint(TRAIN_LINE_COLORS)];
+    vColor      = toLinear(uLineColor[line % uint(TRAIN_LINE_COLORS)]);
+    vLen        = len;
 }

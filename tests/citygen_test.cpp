@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr float kSize = 20'000.0f;
+const CityPlan kPlan = planCity(5'000'000u); // 20 km, full metro
 
 bool finite(Vec2 p) { return std::isfinite(p.x) && std::isfinite(p.y); }
 bool inMap(Vec2 p, float size) { return p.x >= 0.0f && p.y >= 0.0f && p.x <= size && p.y <= size; }
@@ -17,8 +17,8 @@ bool same(Vec2 a, Vec2 b) { return a.x == b.x && a.y == b.y; }
 } // namespace
 
 TEST_CASE("generation is deterministic") {
-    const CityMap a = generateCity(42, kSize);
-    const CityMap b = generateCity(42, kSize);
+    const CityMap a = generateCity(42, kPlan);
+    const CityMap b = generateCity(42, kPlan);
 
     REQUIRE(a.nodes.size() == b.nodes.size());
     for (size_t i = 0; i < a.nodes.size(); ++i) REQUIRE(same(a.nodes[i], b.nodes[i]));
@@ -31,15 +31,15 @@ TEST_CASE("generation is deterministic") {
 }
 
 TEST_CASE("different seeds give different cities") {
-    const CityMap a = generateCity(1, kSize);
-    const CityMap b = generateCity(2, kSize);
+    const CityMap a = generateCity(1, kPlan);
+    const CityMap b = generateCity(2, kPlan);
     REQUIRE((a.nodes.size() != b.nodes.size() || !same(a.nodes[0], b.nodes[0])));
 }
 
 TEST_CASE("generated city is structurally valid") {
     for (uint32_t seed : {1u, 2u, 3u, 1234u}) {
         CAPTURE(seed);
-        const CityMap m = generateCity(seed, kSize);
+        const CityMap m = generateCity(seed, kPlan);
         const size_t  n = m.nodes.size();
 
         REQUIRE(m.seed == seed);
@@ -49,7 +49,7 @@ TEST_CASE("generated city is structurally valid") {
 
         for (const Vec2& p : m.nodes) {
             REQUIRE(finite(p));
-            REQUIRE(inMap(p, kSize));
+            REQUIRE(inMap(p, kPlan.size));
         }
 
         for (const Edge& e : m.edges) {

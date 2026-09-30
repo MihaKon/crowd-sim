@@ -5,6 +5,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <fstream>
@@ -29,23 +30,28 @@ void Ui::init(const std::string& shaderDir, const std::string& fontPath, float p
 
     stbtt_fontinfo info;
     if (!stbtt_InitFont(&info, ttf.data(), 0)) throw std::runtime_error("bad font " + fontPath);
-    const float scale = stbtt_ScaleForPixelHeight(&info, pixelHeight);
-    int ascent, descent, gap, adv, lsb;
-    stbtt_GetFontVMetrics(&info, &ascent, &descent, &gap);
-    stbtt_GetCodepointHMetrics(&info, 'M', &adv, &lsb);
-    ascent_     = std::round(float(ascent) * scale);
-    lineHeight_ = std::round(float(ascent - descent + gap) * scale);
-    advance_    = float(adv) * scale;
+    const float heights[2] = {pixelHeight, std::round(pixelHeight * 2.0f)};
+    for (int i = 0; i < 2; ++i) {
+        const float scale = stbtt_ScaleForPixelHeight(&info, heights[i]);
+        int ascent, descent, gap, adv, lsb;
+        stbtt_GetFontVMetrics(&info, &ascent, &descent, &gap);
+        stbtt_GetCodepointHMetrics(&info, 'M', &adv, &lsb);
+        font_[i].ascent     = std::round(float(ascent) * scale);
+        font_[i].lineHeight = std::round(float(ascent - descent + gap) * scale);
+        font_[i].advance    = float(adv) * scale;
+        font_[i].packed.resize(sizeof(stbtt_packedchar) * kCharCount);
+    }
 
-    packed_.resize(sizeof(stbtt_packedchar) * kCharCount);
     std::vector<unsigned char> bitmap;
     for (;;) {
         bitmap.assign(size_t(atlasW_) * atlasH_, 0);
         stbtt_pack_context pc;
         stbtt_PackBegin(&pc, bitmap.data(), atlasW_, atlasH_, 0, 1, nullptr);
         stbtt_PackSetOversampling(&pc, 2, 1);
-        const int ok = stbtt_PackFontRange(&pc, ttf.data(), 0, pixelHeight, kFirstChar, kCharCount,
-                                           reinterpret_cast<stbtt_packedchar*>(packed_.data()));
+        int ok = 1;
+        for (int i = 0; i < 2 && ok; ++i)
+            ok = stbtt_PackFontRange(&pc, ttf.data(), 0, heights[i], kFirstChar, kCharCount,
+                                     reinterpret_cast<stbtt_packedchar*>(font_[i].packed.data()));
         stbtt_PackEnd(&pc);
         if (ok) break;
         atlasW_ *= 2;
@@ -66,7 +72,8 @@ void Ui::init(const std::string& shaderDir, const std::string& fontPath, float p
     glVertexArrayAttribFormat(vao_, 0, 2, GL_FLOAT, GL_FALSE, offsetof(Vertex, x));
     glVertexArrayAttribFormat(vao_, 1, 2, GL_FLOAT, GL_FALSE, offsetof(Vertex, u));
     glVertexArrayAttribFormat(vao_, 2, 4, GL_UNSIGNED_BYTE, GL_TRUE, offsetof(Vertex, color));
-    for (GLuint i = 0; i < 3; ++i) {
+    glVertexArrayAttribFormat(vao_, 3, 4, GL_FLOAT, GL_FALSE, offsetof(Vertex, shape));
+    for (GLuint i = 0; i < 4; ++i) {
         glEnableVertexArrayAttrib(vao_, i);
         glVertexArrayAttribBinding(vao_, i, 0);
     }
@@ -80,26 +87,52 @@ void Ui::begin(int fbW, int fbH) {
 }
 
 void Ui::quad(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1, uint32_t c) {
-    verts_.push_back({x0, y0, u0, v0, c});
-    verts_.push_back({x1, y0, u1, v0, c});
-    verts_.push_back({x1, y1, u1, v1, c});
-    verts_.push_back({x0, y0, u0, v0, c});
-    verts_.push_back({x1, y1, u1, v1, c});
-    verts_.push_back({x0, y1, u0, v1, c});
+    verts_.push_back({x0, y0, u0, v0, c, {0, 0, 0, 0}});
+    verts_.push_back({x1, y0, u1, v0, c, {0, 0, 0, 0}});
+    verts_.push_back({x1, y1, u1, v1, c, {0, 0, 0, 0}});
+    verts_.push_back({x0, y0, u0, v0, c, {0, 0, 0, 0}});
+    verts_.push_back({x1, y1, u1, v1, c, {0, 0, 0, 0}});
+    verts_.push_back({x0, y1, u0, v1, c, {0, 0, 0, 0}});
+}
+
+// A quad around a rounded rectangle, grown by the feather; uv is the offset from its centre.
+void Ui::shapeQuad(float cx, float cy, float hw, float hh, float radius, float feather, uint32_t c) {
+    const float gx = hw + feather + 1.0f, gy = hh + feather + 1.0f;
+    const float s[4] = {hw, hh, std::min(radius, std::min(hw, hh)), feather};
+    auto v = [&](float ox, float oy) { verts_.push_back({cx + ox, cy + oy, ox, oy, c, {s[0], s[1], s[2], s[3]}}); };
+    v(-gx, -gy);
+    v(gx, -gy);
+    v(gx, gy);
+    v(-gx, -gy);
+    v(gx, gy);
+    v(-gx, gy);
 }
 
 void Ui::rect(float x, float y, float w, float h, uint32_t rgb, float alpha) {
     quad(x, y, x + w, y + h, -1.0f, 0.0f, -1.0f, 0.0f, rgba(rgb, alpha));
 }
 
-float Ui::text(float x, float y, const std::string& s, uint32_t rgb, float alpha) {
+void Ui::roundRect(float x, float y, float w, float h, float radius, uint32_t rgb, float alpha) {
+    shapeQuad(x + 0.5f * w, y + 0.5f * h, 0.5f * w, 0.5f * h, radius, 0.0f, rgba(rgb, alpha));
+}
+
+void Ui::shadow(float x, float y, float w, float h, float radius, float blur, float alpha) {
+    shapeQuad(x + 0.5f * w, y + 0.5f * h + 0.35f * blur, 0.5f * w, 0.5f * h, radius, blur, rgba(0x000000, alpha));
+}
+
+void Ui::circle(float cx, float cy, float r, uint32_t rgb, float alpha) {
+    shapeQuad(cx, cy, r, r, r, 0.0f, rgba(rgb, alpha));
+}
+
+float Ui::text(float x, float y, const std::string& s, uint32_t rgb, float alpha, Size size) {
+    const Font&    f = font_[size];
     const uint32_t c = rgba(rgb, alpha);
-    float          px = std::round(x), py = std::round(y + ascent_);
+    float          px = std::round(x), py = std::round(y + f.ascent);
     for (char ch : s) {
         int idx = int((unsigned char)ch) - kFirstChar;
         if (idx < 0 || idx >= kCharCount) idx = '?' - kFirstChar;
         stbtt_aligned_quad q;
-        stbtt_GetPackedQuad(reinterpret_cast<const stbtt_packedchar*>(packed_.data()), atlasW_, atlasH_, idx, &px,
+        stbtt_GetPackedQuad(reinterpret_cast<const stbtt_packedchar*>(f.packed.data()), atlasW_, atlasH_, idx, &px,
                             &py, &q, 0);
         if (ch != ' ') quad(q.x0, q.y0, q.x1, q.y1, q.s0, q.t0, q.s1, q.t1, c);
     }
