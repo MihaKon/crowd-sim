@@ -224,7 +224,7 @@ GLuint Runner::lodStride(uint32_t outdoor, GLuint count, double budgetScale) con
     const float  hh = 0.5f * float(a_.fbH) / a_.cam.ppm;
     const float  w = std::max(0.0f, std::min(a_.cam.cx + hw, a_.worldSize) - std::max(a_.cam.cx - hw, 0.0f));
     const float  h = std::max(0.0f, std::min(a_.cam.cy + hh, a_.worldSize) - std::max(a_.cam.cy - hh, 0.0f));
-    const double visible = double(outdoor) * double(w) * double(h) / double(a_.worldSize) * double(a_.worldSize);
+    const double visible = double(outdoor) * double(w) * double(h) / (double(a_.worldSize) * double(a_.worldSize));
     const double budget  = budgetScale * kCoverage * double(a_.fbW) * double(a_.fbH) / double(a_.pointSize * a_.pointSize);
     GLuint       s       = 1;
     while (visible / s > budget && s < count) s <<= 1;
