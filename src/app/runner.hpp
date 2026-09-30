@@ -5,9 +5,12 @@
 #include "core/gpu_timer.hpp"
 #include "render/building_render.hpp"
 #include "render/heatmap.hpp"
+#include "render/lighting.hpp"
 #include "render/map_render.hpp"
+#include "render/noise_texture.hpp"
+#include "render/post.hpp"
 #include "render/roads.hpp"
-#include "render/sprite_atlas.hpp"
+#include "render/tree_render.hpp"
 #include "sim/agents.hpp"
 #include "sim/traffic.hpp"
 #include "ui/inspector.hpp"
@@ -60,15 +63,19 @@ private:
     MapRenderer      map_;
     RoadRenderer     roads_;
     BuildingRenderer buildings_;
+    TreeRenderer     trees_;
     Agents           agents_;
     Traffic          traffic_;
     Selection        selection_;
     HeatMap          heat_;
-    SpriteAtlas      sprites_;
     Ui               ui_;
-    GpuTimer         mapTimer_, buildTimer_, drawTimer_;
+    FrameUniforms    frame_;
+    NoiseTexture     noise_;
+    PostFx           post_;
+    GpuTimer         mapTimer_, buildTimer_, drawTimer_, postTimer_;
 
     double            simMs_ = 0.0;
+    double            realSeconds_ = 0.0;
     double            passMs_[2] = {};
     double            trafficMs_ = 0.0;
     bool              measureNext_ = false;

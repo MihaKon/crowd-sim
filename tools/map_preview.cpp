@@ -44,9 +44,9 @@ int main(int argc, char** argv) {
     int    maxFloors = 0;
     for (const Building& b : m.buildings) maxFloors = std::max(maxFloors, int(b.floors));
     std::printf("seed %u, %.0f people: %.1f km | %.0f ms | nodes %zu | edges %zu (%zu arterial) | blocks %zu | "
-                "lines %zu | stations %zu | buildings %zu, up to %d floors\n",
+                "lines %zu | stations %zu | buildings %zu, up to %d floors | trees %zu\n",
                 seed, people, double(m.size) / 1000.0, ms, m.nodes.size(), m.edges.size(), arterials,
-                m.blocks.size(), m.lines.size(), m.stations.size(), m.buildings.size(), maxFloors);
+                m.blocks.size(), m.lines.size(), m.stations.size(), m.buildings.size(), maxFloors, m.trees.size());
 
     std::FILE* file = std::fopen(out, "w");
     if (!file) return 1;

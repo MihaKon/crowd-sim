@@ -1,5 +1,6 @@
 #version 460
 #include "gpu_layout.h"
+#include "frame.glsl"
 // Traffic layer: every lane with cars as a line coloured by how jammed it is
 // (laneStat, written by traffic.comp). Both directions side by side; lines
 // keep a minimum width in pixels so the pattern reads at city scale.
@@ -18,9 +19,6 @@ layout(location = 5) uniform float uOpacity;
 out vec4 vColor;
 
 const vec2 kQuad[6] = vec2[](vec2(0, -0.5), vec2(1, -0.5), vec2(1, 0.5), vec2(0, -0.5), vec2(1, 0.5), vec2(0, 0.5));
-const vec3 kFree = vec3(0.620, 0.808, 0.416); // #9ece6a
-const vec3 kSlow = vec3(0.878, 0.686, 0.408); // #e0af68
-const vec3 kJam  = vec3(0.969, 0.463, 0.557); // #f7768e
 
 vec2 node(uint n) {
     uint o = uNodeSec + 2u * n;
@@ -47,8 +45,9 @@ void main() {
     vec2  q   = kQuad[gl_VertexID % 6];
     vec2  world = a + d * q.x + left * (off + q.y * w);
 
-    float jam = float(st & 0xFFFFu) / 65535.0;
-    vColor    = vec4(jam < 0.5 ? mix(kFree, kSlow, jam * 2.0) : mix(kSlow, kJam, jam * 2.0 - 1.0),
+    float jam   = float(st & 0xFFFFu) / 65535.0;
+    vec3  kFree = overlayHex(0x4cc38au), kSlow = overlayHex(0xf2b43cu), kJam = overlayHex(0xe5484du);
+    vColor      = vec4(jam < 0.5 ? mix(kFree, kSlow, jam * 2.0) : mix(kSlow, kJam, jam * 2.0 - 1.0),
                      uOpacity * (empty ? 0.25 : 1.0)); // empty arterials faint, so the network reads
     gl_Position = vec4((world - uCenter) * uScale, 0.0, 1.0);
 }

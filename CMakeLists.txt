@@ -38,11 +38,8 @@ function(fetch_file url dest)
 endfunction()
 set(STB https://raw.githubusercontent.com/nothings/stb/5c205738c191bcb0abc65c4febfa9bd25ff35234)
 fetch_file(${STB}/stb_truetype.h ${THIRD_PARTY}/stb_truetype.h)
-fetch_file(${STB}/stb_image.h ${THIRD_PARTY}/stb_image.h)
 fetch_file(https://raw.githubusercontent.com/JetBrains/JetBrainsMono/v2.304/fonts/ttf/JetBrainsMono-Regular.ttf
            ${THIRD_PARTY}/JetBrainsMono-Regular.ttf)
-fetch_file(https://raw.githubusercontent.com/ETdoFresh/kenney.nl/master/kenney_rpgurbanpack/Tilemap/tilemap_packed.png
-           ${THIRD_PARTY}/kenney_rpgurban.png)
 
 # City generator and simulation tables: plain C++, no OpenGL.
 add_library(citygen STATIC
@@ -67,8 +64,11 @@ add_executable(crowd_sim
   src/render/map_render.cpp
   src/render/roads.cpp
   src/render/building_render.cpp
-  src/render/sprite_atlas.cpp
   src/render/heatmap.cpp
+  src/render/lighting.cpp
+  src/render/post.cpp
+  src/render/noise_texture.cpp
+  src/render/tree_render.cpp
   src/ui/ui.cpp
   src/ui/selection.cpp
   src/ui/inspector.cpp)
@@ -76,8 +76,7 @@ target_include_directories(crowd_sim SYSTEM PRIVATE ${THIRD_PARTY})
 target_link_libraries(crowd_sim PRIVATE citygen glad_gl46 glfw)
 target_compile_definitions(crowd_sim PRIVATE
   SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
-  FONT_PATH="${THIRD_PARTY}/JetBrainsMono-Regular.ttf"
-  SPRITE_ATLAS_PATH="${THIRD_PARTY}/kenney_rpgurban.png")
+  FONT_PATH="${THIRD_PARTY}/JetBrainsMono-Regular.ttf")
 target_compile_options(crowd_sim PRIVATE ${WARNINGS})
 
 # Headless SVG export of a generated city: ./build/map_preview <seed> city.svg
@@ -96,7 +95,8 @@ if(BUILD_TESTING)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
 
-  add_executable(citygen_tests tests/math_test.cpp tests/citygen_test.cpp tests/cityplan_test.cpp)
+  add_executable(citygen_tests tests/math_test.cpp tests/citygen_test.cpp tests/cityplan_test.cpp
+                               tests/scenery_test.cpp)
   target_link_libraries(citygen_tests PRIVATE citygen Catch2::Catch2WithMain)
   target_compile_options(citygen_tests PRIVATE ${WARNINGS})
   catch_discover_tests(citygen_tests)

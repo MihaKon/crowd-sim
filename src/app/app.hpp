@@ -21,6 +21,7 @@ struct App {
     float    timeScale = 60.0f;
     float    pointSize = 2.0f;
     bool     lod = true;
+    bool     fullRes = false; // render the scene at full window resolution (else about 1080p worth)
     bool     showMap = true;
     bool     showAgents = true;
     uint32_t seed = 1;

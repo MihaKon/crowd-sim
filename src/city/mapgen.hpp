@@ -45,11 +45,18 @@ struct Building {
     Vec2    origin;
     Vec2    axisAlong, axisIn;
     uint8_t tilesAlong, tilesIn;
-    uint8_t palette; // roof set in the Kenney atlas, see kRoofSet in buildings.vert:
+    uint8_t palette; // roof style, see roof() in buildings.frag:
                      // 0 red tiles, 1 orange tiles, 2 concrete, 3 framed concrete, 4 paving, 5 green roof
     uint8_t floors;
     uint8_t facade;  // wall colour, see kFacade in buildings.vert
     uint8_t windows; // window pattern: 0 houses, 1 office bands, 2 shop fronts, 3 industrial
+};
+
+enum class TreeKind : uint8_t { Broadleaf, Conifer, Street };
+struct Tree {
+    Vec2     pos;
+    float    radius; // crown, metres
+    TreeKind kind;
 };
 
 struct Block {
@@ -100,12 +107,29 @@ struct CityMap {
     std::vector<Station>  stations;
     std::vector<District> districts;
     std::vector<Block>    blocks;
-    std::vector<Vec2>     water; // triangle fan: [centre, rim...]; empty if none
+    std::vector<Vec2>     water; // triangle fan: [centre, rim...], may reach past the map; empty if none
+    Vec2                  palace{};
+    float                 palaceRadius = 0.0f;
     std::vector<Building> buildings;
+    std::vector<Tree>     trees;
 };
 
 CityPlan planCity(uint32_t population);
 
+// Rail layout shared by the generator (keeping buildings off it) and the renderer.
+constexpr float kTrackGap       = 4.4f;   // m between the centre lines of the two tracks
+constexpr float kRailCorridor   = 7.5f;   // m, half-width kept free of buildings along a line
+constexpr float kPlatformLength = 200.0f; // m
+constexpr float kPlatformHalf   = 10.0f;  // m, half-width of tracks and both platforms at a stop
+constexpr float kPlazaSize      = 64.0f;  // m, station square where passengers wait
+
+// Where a line stops at a station: the nearest point of its track, and the track direction there.
+struct RailStop {
+    Vec2     pos, dir;
+    uint32_t line, station;
+};
+std::vector<RailStop> railStops(const CityMap& m);
+
 float   roadWidth(RoadType t);
-// Stages: hubs, rail and stations, density field, streets, districts, blocks, water, names, buildings.
+// Stages: hubs, rail and stations, density field, streets, districts, blocks, water, names, buildings, trees.
 CityMap generateCity(uint32_t seed, const CityPlan& plan);

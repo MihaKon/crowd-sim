@@ -122,8 +122,10 @@ TEST_CASE("floor area adds up the buildings on each block") {
         if (b.type == BlockType::Park) REQUIRE(b.floorArea == 0.0f);
         blocks += b.floorArea;
     }
-    for (const Building& b : m.buildings)
+    for (const Building& b : m.buildings) {
+        if (length(b.origin - m.palace) < 0.3f * m.palaceRadius) continue; // the palace: no homes or jobs
         buildings += double(b.tilesAlong) * b.tilesIn * kBuildingTileMetres * kBuildingTileMetres * b.floors;
+    }
     REQUIRE(blocks > 0.0);
     REQUIRE(std::abs(blocks - buildings) / buildings < 1e-4);
 }

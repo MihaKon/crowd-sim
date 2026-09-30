@@ -192,3 +192,35 @@ void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, const std:
 
 
 } // namespace citygen
+
+std::vector<RailStop> railStops(const CityMap& m) {
+    std::vector<RailStop> out;
+    for (uint32_t l = 0; l < m.lines.size(); ++l) {
+        const RailLine& line = m.lines[l];
+        const size_t    n    = line.path.size();
+        if (n < 2) continue;
+        std::vector<uint32_t> seen;
+        for (uint32_t s : line.stations) {
+            if (std::find(seen.begin(), seen.end(), s) != seen.end()) continue;
+            seen.push_back(s);
+            const Vec2 p = m.stations[s].pos;
+            RailStop   best{p, {1.0f, 0.0f}, l, s};
+            float      bestD = std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i + 1 < n + (line.loop ? 1 : 0); ++i) {
+                const Vec2  a = line.path[i], b = line.path[(i + 1) % n], ab = b - a;
+                const float l2 = length2(ab);
+                if (l2 < 1e-6f) continue;
+                const float t = std::clamp(dot(p - a, ab) / l2, 0.0f, 1.0f);
+                const Vec2  q = a + ab * t;
+                if (length2(q - p) < bestD) {
+                    bestD    = length2(q - p);
+                    best.pos = q;
+                    best.dir = ab / std::sqrt(l2);
+                }
+            }
+            out.push_back(best);
+        }
+    }
+    return out;
+}
+

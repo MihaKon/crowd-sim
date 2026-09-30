@@ -28,7 +28,7 @@ public:
     // One step ending at nowMs. advance = false only rebuilds the visible list (paused).
     void step(uint32_t nowMs, float dtS, bool advance, bool emit, bool collect, const Camera& cam, int fbW, int fbH,
               GLuint stride);
-    void draw(const Camera& cam, int fbW, int fbH) const;
+    void draw(const Camera& cam, int fbW, int fbH, float lamps) const; // lamps > 0: headlight beams too
     void setLaneStats(bool on) { glProgramUniform1ui(move_, TRAFFIC_LOC_LANE_STATS, on ? 1u : 0u); }
     void drawCongestion(const Camera& cam, int fbW, int fbH, float opacity) const;
     void destroy();
@@ -49,7 +49,7 @@ private:
     void bind() const;
     void dispatch(GLuint prog, uint32_t items) const;
 
-    GLuint spawn_ = 0, move_ = 0, commit_ = 0, draw_ = 0, vao_ = 0, congestion_ = 0, laneStat_ = 0;
+    GLuint spawn_ = 0, move_ = 0, commit_ = 0, draw_ = 0, beams_ = 0, vao_ = 0, congestion_ = 0, laneStat_ = 0;
     uint32_t nodeSec_ = 0;
     GLuint trafficBuf_ = 0, laneState_ = 0, laneQueue_ = 0, laneReq_ = 0;
     GLuint carLane_ = 0, carKin_ = 0, carRoute_ = 0, visible_ = 0;

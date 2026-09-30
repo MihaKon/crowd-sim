@@ -13,17 +13,18 @@
 namespace citygen {
 
 
+// The bay as a fan around its centre. It is not clipped to the map: beyond the
+// edge the renderer fades everything into haze, and the open sea continues there.
 void buildWater(CityMap& m, const Field& f) {
     if (f.bayRadius <= 0.0f) return;
-    auto clampToMap = [&](Vec2 p) { return Vec2{std::clamp(p.x, 0.0f, m.size), std::clamp(p.y, 0.0f, m.size)}; };
-    const Vec2 c    = f.bayCenter;
-    m.water.push_back(clampToMap(c));
+    const Vec2 c = f.bayCenter;
+    m.water.push_back(c);
     for (int i = 0; i <= 720; ++i) {
         const float a = 2.0f * kPi * float(i) / 720.0f;
         const Vec2  d{std::cos(a), std::sin(a)};
         float       r = 0.0f;
         while (r < 2.5f * f.bayRadius && f.water(c + d * r)) r += 20.0f;
-        m.water.push_back(clampToMap(c + d * r));
+        m.water.push_back(c + d * r);
     }
 }
 
@@ -76,6 +77,8 @@ CityMap generateCity(uint32_t seed, const CityPlan& plan) {
     const float R  = size * 0.2f;
     f.palace       = C;
     f.palaceRadius = rng.uni(550.0f, 750.0f) * zone;
+    m.palace       = C;
+    m.palaceRadius = f.palaceRadius;
 
     const std::vector<Vec2> hubs = placeHubs(f, rng, C, R, plan.hubs);
     buildRail(f, rng, m, C, R, hubs);
