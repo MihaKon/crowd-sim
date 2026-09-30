@@ -81,7 +81,7 @@ void buildTimetables(const CityMap& m, Rail& r) {
             }
 
             const uint32_t count   = uint32_t(seq.size());
-            uint32_t       headway = uint32_t((loop || l == 1 ? kLoopHeadway : kLineHeadway) * 1000.0f);
+            uint32_t       headway = uint32_t(m.lines[l].headway * 1000.0f);
             uint32_t       span = dep, fleet = 0, slots = 0;
             if (count < 2) {
                 fleet = 0;
@@ -223,35 +223,78 @@ SimWorld buildSimWorld(const CityMap& m) {
     const uint32_t S = uint32_t(m.stations.size()), L = uint32_t(m.lines.size());
     const uint32_t B = uint32_t(m.blocks.size());
 
+    // Homes and jobs are repeated in the pick lists in proportion to the floor area of
+    // the block's buildings; a block with any floor area gets at least one entry.
+    // Homes: each class gets a fixed share of the list (the class mix belongs to the
+    // social model, not to building sizes), spread over its blocks by floor area.
+    // Jobs: offices, shops and factories need different floor area per worker.
+    constexpr float kMaxEntries    = 200'000.0f;
+    constexpr float kClassShare[3] = {0.21f, 0.67f, 0.12f}; // poor, ordinary, wealthy
+    constexpr float kOfficeM2 = 15.0f, kShopM2 = 30.0f, kFactoryM2 = 60.0f;
+    auto classOf = [](BlockType t) {
+        return t == BlockType::ResidentialPoor ? 0
+             : t == BlockType::Residential     ? 1
+             : t == BlockType::ResidentialRich ? 2
+                                               : -1;
+    };
+    float homeArea[3] = {0.0f, 0.0f, 0.0f}, workers = 0.0f;
+    for (const Block& b : m.blocks) {
+        if (const int c = classOf(b.type); c >= 0) homeArea[c] += b.floorArea;
+        else if (b.type == BlockType::Office) workers += b.floorArea / kOfficeM2;
+        else if (b.type == BlockType::Commercial) workers += b.floorArea / kShopM2;
+        else if (b.type == BlockType::Industrial) workers += b.floorArea / kFactoryM2;
+    }
+    float shareSum = 0.0f, homeUnit[3];
+    for (int c = 0; c < 3; ++c) shareSum += homeArea[c] > 0.0f ? kClassShare[c] : 0.0f;
+    for (int c = 0; c < 3; ++c) // m² of floor area per list entry
+        homeUnit[c] = homeArea[c] > 0.0f ? homeArea[c] * shareSum / (kClassShare[c] * kMaxEntries) : 1.0f;
+    const float jobUnit = std::max(1.0f, workers / kMaxEntries);
+
     std::vector<uint32_t> residential, commercial, pay[3];
-    auto add = [](std::vector<uint32_t>& v, uint32_t b, int n) { v.insert(v.end(), size_t(n), b); };
+    auto add = [](std::vector<uint32_t>& v, uint32_t b, float amount, float unit, bool atLeastOne) {
+        const int n = int(std::lround(amount / unit));
+        v.insert(v.end(), size_t(atLeastOne ? std::max(n, 1) : n), b);
+    };
     for (uint32_t b = 0; b < B; ++b) {
-        const DistrictKind d = m.blocks[b].district < m.districts.size() ? m.districts[m.blocks[b].district].kind
-                                                                         : DistrictKind::Residential;
-        switch (m.blocks[b].type) {
-        case BlockType::Residential: add(residential, b, 2); break;
-        case BlockType::ResidentialPoor: add(residential, b, 3); break;
-        case BlockType::ResidentialRich: add(residential, b, 1); break;
-        case BlockType::Commercial:
-            commercial.push_back(b);
-            add(pay[0], b, 1);
-            if (d == DistrictKind::Business || d == DistrictKind::Wealthy) add(pay[1], b, 1);
-            break;
-        case BlockType::Office:
-            if (d == DistrictKind::Business) {
-                add(pay[2], b, 2);
-                add(pay[1], b, 2);
+        const Block&       blk = m.blocks[b];
+        const DistrictKind d   = blk.district < m.districts.size() ? m.districts[blk.district].kind
+                                                                   : DistrictKind::Residential;
+        if (blk.type == BlockType::Commercial) commercial.push_back(b);
+        if (blk.floorArea <= 0.0f) continue;
+        if (const int c = classOf(blk.type); c >= 0) {
+            add(residential, b, blk.floorArea, homeUnit[c], true);
+            continue;
+        }
+        switch (blk.type) {
+        case BlockType::Commercial: {
+            const float jobs = blk.floorArea / kShopM2;
+            if (d == DistrictKind::Business || d == DistrictKind::Wealthy) {
+                add(pay[0], b, 0.5f * jobs, jobUnit, true);
+                add(pay[1], b, 0.5f * jobs, jobUnit, false);
             } else {
-                add(pay[1], b, 2);
-                add(pay[0], b, 1);
+                add(pay[0], b, jobs, jobUnit, true);
             }
             break;
-        case BlockType::Industrial:
-            add(pay[0], b, 3);
-            add(pay[1], b, 1);
-            if (b % 4 == 0) add(pay[2], b, 1);
+        }
+        case BlockType::Office: {
+            const float jobs = blk.floorArea / kOfficeM2;
+            if (d == DistrictKind::Business) {
+                add(pay[2], b, 0.5f * jobs, jobUnit, true);
+                add(pay[1], b, 0.5f * jobs, jobUnit, false);
+            } else {
+                add(pay[1], b, 0.67f * jobs, jobUnit, true);
+                add(pay[0], b, 0.33f * jobs, jobUnit, false);
+            }
             break;
-        case BlockType::Park: break;
+        }
+        case BlockType::Industrial: {
+            const float jobs = blk.floorArea / kFactoryM2;
+            add(pay[0], b, 0.70f * jobs, jobUnit, true);
+            add(pay[1], b, 0.25f * jobs, jobUnit, false);
+            add(pay[2], b, 0.05f * jobs, jobUnit, false);
+            break;
+        }
+        default: break; // parks; homes are handled above
         }
     }
     if (residential.empty())

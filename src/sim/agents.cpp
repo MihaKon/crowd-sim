@@ -29,10 +29,16 @@ enum TrainLoc : GLint {
 constexpr uint32_t kDayMs = 24u * 3600u * 1000u;
 constexpr uint32_t kResetAt = 3u * 3600u * 1000u; // 03:00
 
+// Never empty (no rail: no train slots); short data is copied, not over-read.
 GLuint makeBuffer(GLsizeiptr bytes, const void* data, GLbitfield flags = 0) {
     GLuint b = 0;
     glCreateBuffers(1, &b);
-    glNamedBufferStorage(b, std::max<GLsizeiptr>(bytes, 16), data, flags);
+    if (bytes >= 16) {
+        glNamedBufferStorage(b, bytes, data, flags);
+    } else {
+        glNamedBufferStorage(b, 16, nullptr, flags | GL_DYNAMIC_STORAGE_BIT);
+        if (data && bytes > 0) glNamedBufferSubData(b, 0, bytes, data);
+    }
     return b;
 }
 

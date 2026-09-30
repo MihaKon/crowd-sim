@@ -1,7 +1,8 @@
-// Writes a generated city as SVG, no OpenGL needed. Usage: map_preview [seed] [out.svg]
+// Writes a generated city as SVG, no OpenGL needed. Usage: map_preview [seed] [out.svg] [people]
 #include "city/mapgen.hpp"
 #include "core/palette.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -32,16 +33,20 @@ const char* blockColor(BlockType t) {
 int main(int argc, char** argv) {
     const uint32_t seed = argc > 1 ? uint32_t(std::strtoul(argv[1], nullptr, 10)) : 1u;
     const char*    out  = argc > 2 ? argv[2] : "city.svg";
+    const double   people = argc > 3 ? std::strtod(argv[3], nullptr) : 1e6;
 
     const auto    t0 = std::chrono::steady_clock::now();
-    const CityMap m  = generateCity(seed, 20'000.0f);
+    const CityMap m  = generateCity(seed, planCity(uint32_t(people)));
     const double  ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
     size_t arterials = 0;
     for (const Edge& e : m.edges) arterials += e.type == RoadType::Arterial;
-    std::printf("seed %u: %.0f ms | nodes %zu | edges %zu (%zu arterial) | blocks %zu | lines %zu | stations %zu\n",
-                seed, ms, m.nodes.size(), m.edges.size(), arterials, m.blocks.size(), m.lines.size(),
-                m.stations.size());
+    int    maxFloors = 0;
+    for (const Building& b : m.buildings) maxFloors = std::max(maxFloors, int(b.floors));
+    std::printf("seed %u, %.0f people: %.1f km | %.0f ms | nodes %zu | edges %zu (%zu arterial) | blocks %zu | "
+                "lines %zu | stations %zu | buildings %zu, up to %d floors\n",
+                seed, people, double(m.size) / 1000.0, ms, m.nodes.size(), m.edges.size(), arterials,
+                m.blocks.size(), m.lines.size(), m.stations.size(), m.buildings.size(), maxFloors);
 
     std::FILE* file = std::fopen(out, "w");
     if (!file) return 1;

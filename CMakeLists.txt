@@ -96,7 +96,7 @@ if(BUILD_TESTING)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
 
-  add_executable(citygen_tests tests/math_test.cpp tests/citygen_test.cpp)
+  add_executable(citygen_tests tests/math_test.cpp tests/citygen_test.cpp tests/cityplan_test.cpp)
   target_link_libraries(citygen_tests PRIVATE citygen Catch2::Catch2WithMain)
   target_compile_options(citygen_tests PRIVATE ${WARNINGS})
   catch_discover_tests(citygen_tests)

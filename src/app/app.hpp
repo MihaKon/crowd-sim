@@ -9,11 +9,10 @@
 #include <algorithm>
 #include <cstdint>
 
-constexpr float kWorldSize = 20'000.0f;
-
 // State shared by the input callbacks, the HUD and the frame loop.
 struct App {
     Camera   cam;
+    float    worldSize = 20'000.0f; // m, side of the generated city (CityPlan::size)
     int      fbW = 1280, fbH = 720;
     bool     dragging = false;
     double   lastX = 0.0, lastY = 0.0;
@@ -51,6 +50,6 @@ inline float pixelRatio(GLFWwindow* w) {
 }
 
 inline void resetCamera(App& a) {
-    a.cam.cx = a.cam.cy = kWorldSize * 0.5f;
-    a.cam.ppm = float(std::max(1, std::min(a.fbW, a.fbH))) / kWorldSize;
+    a.cam.cx = a.cam.cy = a.worldSize * 0.5f;
+    a.cam.ppm = float(std::max(1, std::min(a.fbW, a.fbH))) / a.worldSize;
 }

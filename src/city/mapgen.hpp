@@ -31,7 +31,9 @@ struct Station {
 struct RailLine {
     std::vector<Vec2>     path;
     std::vector<uint32_t> stations;
-    bool                  loop = false;
+    bool                  loop      = false;
+    bool                  crossTown = false;  // through the centre, between two opposite hubs
+    float                 headway   = 240.0f; // s between trains
     std::string           name;
 };
 
@@ -57,11 +59,35 @@ struct Block {
     BlockType         type;
     uint32_t          anchor;
     uint16_t          district;
+    float             floorArea = 0.0f; // m², all floors of all buildings on the block
 };
+
+enum class Transit : uint8_t {
+    None,     // walking and driving only
+    Commuter, // a few surface lines through the centre and out to the suburbs
+    Metro,    // ring line, cross-town line and radial lines
+};
+
+// Everything about the city that follows from its population. The generator's
+// reference distances are tuned for 5M people on 20 km (scale 1).
+struct CityPlan {
+    uint32_t population  = 0;
+    float    size        = 0.0f; // m, side of the square map
+    float    scale       = 1.0f; // size / 20 km
+    Transit  transit     = Transit::None;
+    int      hubs        = 0;     // sub-centres around the centre (rail hubs when there is rail)
+    int      lines       = 0;     // rail lines in total
+    float    towerFloors = 30.0f; // tallest office towers in the business district
+};
+
+constexpr float kPlanDensity = 12'500.0f; // people per km²
+constexpr float kPlanMinSize = 4'000.0f;  // m
+constexpr float kPlanMaxSize = 28'000.0f; // m, keeps the traffic lanes well under 2^18
 
 struct CityMap {
     uint32_t seed = 0;
     float    size = 0.0f;
+    CityPlan plan;
 
     // Street graph (single connected component), CSR with neighbours sorted CCW.
     std::vector<Vec2>     nodes;
@@ -78,6 +104,8 @@ struct CityMap {
     std::vector<Building> buildings;
 };
 
+CityPlan planCity(uint32_t population);
+
 float   roadWidth(RoadType t);
-// Stages: rail and stations, density field, streets, districts, blocks, water, names, buildings.
-CityMap generateCity(uint32_t seed, float size);
+// Stages: hubs, rail and stations, density field, streets, districts, blocks, water, names, buildings.
+CityMap generateCity(uint32_t seed, const CityPlan& plan);

@@ -25,7 +25,12 @@ enum DrawLoc : GLint { kDCenter = 0, kDScale, kDPpm, kDCapacity, kDOwnerCount };
 GLuint makeBuffer(GLsizeiptr bytes, const void* data) {
     GLuint b = 0;
     glCreateBuffers(1, &b);
-    glNamedBufferStorage(b, std::max<GLsizeiptr>(bytes, 16), data, 0);
+    if (bytes >= 16) {
+        glNamedBufferStorage(b, bytes, data, 0);
+    } else {
+        glNamedBufferStorage(b, 16, nullptr, GL_DYNAMIC_STORAGE_BIT);
+        if (data && bytes > 0) glNamedBufferSubData(b, 0, bytes, data);
+    }
     return b;
 }
 

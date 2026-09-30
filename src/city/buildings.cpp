@@ -54,18 +54,27 @@ struct Style {
     uint8_t roof, floors, facade, windows;
 };
 
-Style pickStyle(BlockType type, DistrictKind district, Rng& rng) {
+// height: CityPlan::towerFloors / 30. Towers scale with it, mid-rises with its
+// square root, low-rise housing and industry stay as they are.
+Style pickStyle(BlockType type, DistrictKind district, float height, Rng& rng) {
     const float r = rng.uni(), r2 = rng.uni();
     auto        floors = [&](int lo, int hi) { return uint8_t(lo + rng.below(hi - lo + 1)); };
+    auto        tower  = [&](int lo, int hi) {
+        const int l = std::clamp(int(std::lround(float(lo) * height)), 1, 250);
+        return floors(l, std::clamp(int(std::lround(float(hi) * height)), l, 250));
+    };
+    auto        mid    = [&](int lo, int hi) {
+        return floors(lo, std::max(lo, int(std::lround(float(hi) * std::sqrt(height)))));
+    };
     switch (type) {
     case BlockType::Office:
         if (district == DistrictKind::Business)
-            return {uint8_t(r < 0.5f ? 2 : 3), floors(8, 30), uint8_t(r2 < 0.7f ? 3 : 2), 1};
-        return {uint8_t(r < 0.6f ? 2 : 3), floors(4, 8), 2, 1};
+            return {uint8_t(r < 0.5f ? 2 : 3), tower(8, 30), uint8_t(r2 < 0.7f ? 3 : 2), 1};
+        return {uint8_t(r < 0.6f ? 2 : 3), mid(4, 8), 2, 1};
     case BlockType::Commercial: {
         const uint8_t roof = r < 0.4f ? 4 : r < 0.7f ? 3 : r < 0.85f ? 1 : 2;
-        if (district == DistrictKind::Business) return {roof, floors(4, 12), uint8_t(r2 < 0.5f ? 3 : 1), 2};
-        return {roof, floors(2, 6), uint8_t(district == DistrictKind::Poor ? 4 : 1), 2};
+        if (district == DistrictKind::Business) return {roof, tower(4, 12), uint8_t(r2 < 0.5f ? 3 : 1), 2};
+        return {roof, mid(2, 6), uint8_t(district == DistrictKind::Poor ? 4 : 1), 2};
     }
     case BlockType::Industrial:
         return {uint8_t(r < 0.5f ? 3 : r < 0.8f ? 2 : 1), floors(2, 3), 5, 3};
@@ -74,7 +83,7 @@ Style pickStyle(BlockType type, DistrictKind district, Rng& rng) {
     case BlockType::ResidentialPoor:
         return {uint8_t(r < 0.5f ? 2 : r < 0.85f ? 1 : 3), floors(1, 3), uint8_t(r2 < 0.75f ? 4 : 5), 0};
     default:
-        return {uint8_t(r < 0.45f ? 0 : r < 0.8f ? 1 : r < 0.95f ? 2 : 5), floors(2, 5), uint8_t(r2 < 0.5f ? 0 : 1), 0};
+        return {uint8_t(r < 0.45f ? 0 : r < 0.8f ? 1 : r < 0.95f ? 2 : 5), mid(2, 5), uint8_t(r2 < 0.5f ? 0 : 1), 0};
     }
 }
 
@@ -186,7 +195,7 @@ bool fits(const Obb& o, const std::vector<Vec2>& block, float margin, const std:
 // Lots edge to edge along the polygon; one that does not fit is tried shallower and
 // set back before it becomes a gap. Returns the deepest lot (inset for the next ring).
 float placeRing(const std::vector<Vec2>& poly, const std::vector<Vec2>& block, float margin, BlockType type,
-                DistrictKind district, Rng& rng, const StreetGrid& streets, std::vector<Obb>& placed,
+                DistrictKind district, float height, Rng& rng, const StreetGrid& streets, std::vector<Obb>& placed,
                 std::vector<Building>& out) {
     const RingParams p = ringParamsFor(type, district);
     const float      T = kBuildingTileMetres;
@@ -215,7 +224,7 @@ float placeRing(const std::vector<Vec2>& poly, const std::vector<Vec2>& block, f
                 w          = float(tilesAlong) * T;
                 if (t + w > len + 0.05f) break;
             }
-            const Style style = pickStyle(type, district, rng);
+            const Style style = pickStyle(type, district, height, rng);
             if (rng.uni() >= p.gapChance) {
                 bool done = false;
                 for (int tilesIn = p.tilesInMin + rng.below(p.tilesInMax - p.tilesInMin + 1);
@@ -246,9 +255,10 @@ void buildBuildings(CityMap& m, Rng& rng) {
     constexpr float kRingGap = 1.0f;
 
 
-    StreetGrid streets;
+    const float height = m.plan.towerFloors / 30.0f;
+    StreetGrid  streets;
     streets.build(m);
-    for (const Block& blk : m.blocks) {
+    for (Block& blk : m.blocks) {
         if (blk.type == BlockType::Park) continue;
         const std::vector<Vec2> lot1 = insetPolygon(blk.poly, kSetback);
         if (lot1.size() < 3 || polygonArea(lot1) < kMinArea || polygonArea(lot1) >= polygonArea(blk.poly)) continue;
@@ -258,14 +268,20 @@ void buildBuildings(CityMap& m, Rng& rng) {
                                     : blk.type == BlockType::ResidentialPoor ? 4
                                                                              : 2;
         std::vector<Obb>   placed;
-        std::vector<Vec2>  lot = lot1;
+        std::vector<Vec2>  lot   = lot1;
+        const size_t       first = m.buildings.size();
         for (int ring = 0; ring < rings; ++ring) {
-            const float depth =
-                placeRing(lot, blk.poly, kSetback - 0.1f, blk.type, district, rng, streets, placed, m.buildings);
+            const float depth = placeRing(lot, blk.poly, kSetback - 0.1f, blk.type, district, height, rng, streets,
+                                          placed, m.buildings);
             if (depth <= 0.0f || ring + 1 == rings) break;
             std::vector<Vec2> next = insetPolygon(lot, depth + kRingGap);
             if (next.size() < 3 || polygonArea(next) < kMinArea || polygonArea(next) >= polygonArea(lot)) break;
             lot = std::move(next);
+        }
+        for (size_t i = first; i < m.buildings.size(); ++i) {
+            const Building& b = m.buildings[i];
+            blk.floorArea += float(b.tilesAlong) * float(b.tilesIn) * kBuildingTileMetres * kBuildingTileMetres *
+                             float(b.floors);
         }
     }
 }

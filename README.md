@@ -8,13 +8,15 @@ Everything is written in C++20 and OpenGL 4.6 compute shaders. No game engine.
 
 ## What it does
 
-**A generated city.** Every seed gives a different 20 × 20 km city: a bay, an imperial palace in the middle, a ring rail line with radial lines, arterial roads, around 50 000 streets, 19 000 city blocks and over half a million buildings.
+**A generated city.** Every seed gives a different city: a bay, an imperial palace in the middle, arterial roads, rail, and streets, blocks and buildings down to the last house. **Its size follows the population** (about 12 500 people per km²): 1 million people get a 9 km town, 5 million a 20 × 20 km city with around 50 000 streets, 19 000 blocks and over half a million buildings, and 10 million a 28 km megacity (the largest size; beyond it the city only gets denser).
 
 **Districts.** The city is split into about 125 districts. The centre and the main rail hub are business districts full of glass towers. Industry sits along the bay. The rest is residential: ordinary housing, wealthy villa quarters with gardens (mostly west of the centre), and cramped poor districts that end up next to the factories.
 
 **People with a daily routine.** Every person has a home and, if they work, a job. They leave in the morning, walk, take the train or drive, spend the day at work, sometimes go shopping, and come back in the evening. Where you live decides a lot: people from poor districts are more often unemployed and work low-paid jobs in shops and factories, while people from wealthy districts mostly work well-paid jobs in the centre.
 
-**Trains.** Eight lines with real timetables (a ring line and cross-town line every 3 minutes, radial lines every 4 minutes, 05:00 to 23:30). Trains have limited capacity. At rush hour people get left behind on full platforms, and after a few missed trains they give up and walk.
+**Trains.** The rail network also depends on the population. Under 500 000 people there is no rail: people walk and drive. Up to 2 million there are one to three commuter lines every 6 minutes: a cross-town line with branches that meet it at an interchange. From 2 million up it's a metro: a ring line and a cross-town line every 3 minutes, and radial lines every 4 minutes (six of them at 5 million, more in bigger cities). All lines run on real timetables from 05:00 to 23:30. Trains have limited capacity. At rush hour people get left behind on full platforms, and after a few missed trains they give up and walk.
+
+**Taller cities.** Office towers in the business district grow with the population: about 11 floors at 1 million, 30 at 5 million, 45 at 10 million. How many people live or work in a block follows the floor area of its buildings, so a tower block holds far more people than a street of houses.
 
 **Traffic.** Car owners drive when the trip is long, and vans and taxis drive around all day. Streets have lanes, arterials have traffic lights, and cars queue behind each other. At rush hour the main roads really do jam.
 
@@ -43,15 +45,16 @@ Everything is written in C++20 and OpenGL 4.6 compute shaders. No game engine.
 | `L` / `V` | toggle level of detail / vsync |
 | `[` / `]` | point size |
 
-Run it as `./build/crowd_sim [people] [seed]`, for example `./build/crowd_sim 5e6 42`. The defaults are 1 million people and seed 1.
+Run it as `./build/crowd_sim [people] [seed]`, for example `./build/crowd_sim 5e6 42`. The defaults are 1 million people and seed 1. The number of people decides the size of the city, its rail network and how tall it gets.
 
 ## How it works
 
 ### Generating the city
 
-The generator is plain C++ and runs on the CPU in about two seconds.
+The generator is plain C++ and runs on the CPU: about half a second for 1 million people, two seconds for 5 million, five for the largest city.
 
-1. **Rail first.** A ring of hubs around the centre gets a ring line, a cross-town line through the middle and radial lines towards the edges. Stations are placed along them.
+0. **The plan.** The population sets the size of the map, the number of hubs, the kind of rail and the height of the towers. The generator's distances are tuned for 5 million people on 20 km and scale from there. At 5 million people a seed gives exactly the same streets as it always did.
+1. **Rail first.** A ring of hubs around the centre gets a ring line, a cross-town line through the middle and radial lines towards the edges (smaller cities get commuter lines instead, or no rail). Stations are placed along them.
 2. **Density.** A density field is built from the hubs, the stations and the city centre, plus some noise. It decides how dense the streets get.
 3. **Streets.** Street junctions are scattered with a variable-radius Poisson disk (dense near stations, sparse in the outskirts), and streets are the edges of their Gabriel graph. Arterial roads are inserted first, so they end up as continuous roads. Then triangles are merged into quads, sharp angles are removed and only the largest connected part is kept.
 4. **Blocks.** Blocks are the faces of this planar street graph.
@@ -152,7 +155,7 @@ Shaders are loaded from the source tree at runtime, so after changing a shader y
 
 ### Useful to know
 
-- `./build/map_preview <seed> city.svg` writes a generated city as an SVG. It's the fastest way to work on the generator.
+- `./build/map_preview <seed> city.svg [people]` writes a generated city as an SVG (1 million people by default). It's the fastest way to work on the generator.
 - The simulation prints one status line per second with GPU timings of each pass (sim, cull, cars, map, draw), which is handy for profiling.
 - The number of people is limited by the largest shader storage buffer your driver allows. If you ask for too many, the app tells you and uses the maximum instead.
 - The generator is deterministic: the same seed always gives the same city, down to every building.

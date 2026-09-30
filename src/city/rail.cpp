@@ -75,26 +75,40 @@ void placeStations(RailBuilder& rb, RailLine& line, uint32_t idx, const std::vec
 
 } // namespace
 
-void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, std::vector<Vec2>& hubs) {
-    RailBuilder rb{m};
-    constexpr int H = 6;
-
-    const float rot = rng.uni(0.0f, 2.0f * kPi);
-    for (int i = 0; i < H; ++i) {
-        const float a = rot + 2.0f * kPi * float(i) / H + rng.uni(-0.25f, 0.25f);
+std::vector<Vec2> placeHubs(const Field& f, Rng& rng, Vec2 C, float R, int count) {
+    std::vector<Vec2> hubs;
+    const float       rot = rng.uni(0.0f, 2.0f * kPi);
+    for (int i = 0; i < count; ++i) {
+        const float a = rot + 2.0f * kPi * float(i) / float(count) + rng.uni(-0.25f, 0.25f);
         Vec2        h = C + Vec2{std::cos(a), std::sin(a)} * (R * rng.uni(0.85f, 1.15f));
         for (int k = 0; k < 20 && f.water(h); ++k) h = lerp(h, C, 0.15f);
         hubs.push_back(h);
     }
+    return hubs;
+}
+
+// Metro: a ring line through the hubs, a cross-town line between two opposite hubs
+// and radial lines out of the other hubs. Commuter rail: the cross-town line and a
+// few radials, with longer headways and stations further apart.
+void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, const std::vector<Vec2>& hubs) {
+    const CityPlan& plan = m.plan;
+    const int       H    = int(hubs.size());
+    if (plan.transit == Transit::None || plan.lines <= 0 || H < 2) return;
+
+    const bool  metro    = plan.transit == Transit::Metro;
+    const float crossGap = metro ? 1200.0f : 1500.0f;
+    const float lineGap  = metro ? 1300.0f : 1500.0f;
+    RailBuilder rb{m};
 
     auto ringPoint = [&](int seg, float t) {
         return catmull(hubs[size_t((seg + H - 1) % H)], hubs[size_t(seg)], hubs[size_t((seg + 1) % H)],
                        hubs[size_t((seg + 2) % H)], t);
     };
 
-    {
+    if (metro) {
         RailLine ring;
-        ring.loop = true;
+        ring.loop    = true;
+        ring.headway = 180.0f;
         for (int i = 0; i < H; ++i) {
             float len  = 0.0f;
             Vec2  prev = ringPoint(i, 0.0f);
@@ -115,6 +129,8 @@ void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, std::vecto
     {
         const uint32_t    idx = uint32_t(m.lines.size());
         RailLine          line;
+        line.crossTown        = true;
+        line.headway          = metro ? 180.0f : 360.0f;
         const Vec2        ha = hubs[size_t(a)], hb = hubs[size_t(b)];
         std::vector<Vec2> outA = walkTrack(f, ha, rotate(normalize(ha - C), rng.uni(-0.3f, 0.3f)), rng);
         std::reverse(outA.begin(), outA.end());
@@ -129,21 +145,47 @@ void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, std::vecto
         }
         const std::vector<Vec2> outB = walkTrack(f, hb, rotate(normalize(hb - C), rng.uni(-0.3f, 0.3f)), rng);
         line.path.insert(line.path.end(), outB.begin() + 1, outB.end());
-        placeStations(rb, line, idx, {ha, hb}, 1200.0f, rng);
+        placeStations(rb, line, idx, {ha, hb}, crossGap, rng);
         m.lines.push_back(std::move(line));
     }
 
+    const size_t      radials = size_t(std::max(0, plan.lines - (metro ? 2 : 1)));
     std::vector<Vec2> starts;
     for (int i = 0; i < H; ++i)
         if (i != a && i != b) starts.push_back(hubs[size_t(i)]);
-    for (int j = 0; j < 2; ++j) starts.push_back(ringPoint(rng.below(H), 0.5f));
+    if (metro)
+        while (starts.size() < radials) starts.push_back(ringPoint(rng.below(H), 0.5f));
+    if (starts.size() > radials) starts.resize(radials);
+
+    // Commuter radials branch off the cross-town line at its station nearest the hub,
+    // so every line has an interchange.
+    const std::vector<uint32_t> crossStations = m.lines.back().stations; // copy: m.lines grows below
+    auto                        branchPoint   = [&](Vec2 hub) {
+        Vec2  best  = hub;
+        float bestD = kInf;
+        for (uint32_t st : crossStations)
+            if (length2(m.stations[st].pos - hub) < bestD) {
+                bestD = length2(m.stations[st].pos - hub);
+                best  = m.stations[st].pos;
+            }
+        return best;
+    };
 
     for (const Vec2 s : starts) {
         RailLine line;
-        line.path = walkTrack(f, s, rotate(normalize(s - C), rng.uni(-0.35f, 0.35f)), rng);
-        if (line.path.size() < 15) continue;
+        line.headway          = metro ? 240.0f : 360.0f;
+        std::vector<Vec2> out = walkTrack(f, s, rotate(normalize(s - C), rng.uni(-0.35f, 0.35f)), rng);
+        if (out.size() < 15) continue;
+        std::vector<Vec2> anchors{s};
+        if (!metro) {
+            const Vec2 from    = branchPoint(s);
+            const int  samples = int(length(s - from) / 40.0f);
+            for (int k = 0; k < samples; ++k) line.path.push_back(lerp(from, s, float(k) / float(samples)));
+            anchors.push_back(from);
+        }
+        line.path.insert(line.path.end(), out.begin(), out.end());
         const uint32_t idx = uint32_t(m.lines.size());
-        placeStations(rb, line, idx, {s}, 1300.0f, rng);
+        placeStations(rb, line, idx, anchors, lineGap, rng);
         m.lines.push_back(std::move(line));
     }
 }

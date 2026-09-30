@@ -70,8 +70,9 @@ struct Bump {
 };
 
 struct Field {
-    float             size = 0.0f;
-    uint32_t          seed = 0;
+    float             size  = 0.0f;
+    float             scale = 1.0f; // CityPlan::scale
+    uint32_t          seed  = 0;
     Vec2              bayCenter;
     float             bayRadius = 0.0f;
     Vec2              palace;
@@ -80,7 +81,7 @@ struct Field {
 
     bool water(Vec2 p) const {
         if (bayRadius <= 0.0f) return false;
-        const float n = fbm(p * (1.0f / 2500.0f), seed + 11u) - 0.5f;
+        const float n = fbm(p * (1.0f / (2500.0f * scale)), seed + 11u) - 0.5f;
         return length(p - bayCenter) < bayRadius * (1.0f + 0.6f * n);
     }
 
@@ -183,7 +184,8 @@ struct Seeded {
     std::vector<std::pair<uint32_t, uint32_t>> arterialPairs;
 };
 
-void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, std::vector<Vec2>& hubs);
+std::vector<Vec2> placeHubs(const Field& f, Rng& rng, Vec2 C, float R, int count);
+void buildRail(const Field& f, Rng& rng, CityMap& m, Vec2 C, float R, const std::vector<Vec2>& hubs);
 std::vector<std::vector<Vec2>> planArterials(const Field& f, Vec2 C, float R, Rng& rng);
 Seeded poissonDisk(const Field& f, const ScalarGrid& spacing, const std::vector<std::vector<Vec2>>& arterials,
                    Rng& rng);

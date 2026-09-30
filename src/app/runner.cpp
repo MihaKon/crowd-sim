@@ -66,8 +66,12 @@ Runner::~Runner() {
 
 void Runner::rebuildWorld() {
     auto t0     = Clock::now();
-    city_       = generateCity(a_.seed, kWorldSize);
+    city_       = generateCity(a_.seed, planCity(count_));
     const double genMs = elapsedMs(t0);
+    if (a_.worldSize != city_.size) {
+        a_.worldSize = city_.size;
+        resetCamera(a_);
+    }
 
     t0 = Clock::now();
     map_.upload(city_);
@@ -89,7 +93,10 @@ void Runner::rebuildWorld() {
     const TrafficWorld& tw = traffic_.world();
     size_t              kinds[5] = {};
     for (const District& d : city_.districts) ++kinds[int(d.kind)];
+    static const char* kTransit[] = {"no rail", "commuter rail", "metro"};
+    const CityPlan&    plan       = city_.plan;
     std::printf("\ncity seed %u: generated in %.0f ms, tables + upload %.0f ms\n"
+                "  plan: %.1f km for %u people, %s (%d lines planned), towers up to %.0f floors\n"
                 "  %zu nodes, %zu streets, %zu blocks, %u stations on %u lines, sim tables %.1f MB\n"
                 "  trains: %zu slots, %u trips/day, %u passengers per train\n"
                 "  districts: %zu (business %zu, residential %zu, wealthy %zu, poor %zu, industrial %zu)\n"
@@ -97,7 +104,9 @@ void Runner::rebuildWorld() {
                 "  buildings: %zu\n"
                 "  traffic: %u lanes (%u car slots), %u signals, %u routing regions, tables %.0f ms\n"
                 "  cars: %u private (every %u. agent), %u vans/taxis\n",
-                a_.seed, genMs, upMs, city_.nodes.size(), city_.edges.size(), city_.blocks.size(), w.stationCount,
+                a_.seed, genMs, upMs, double(plan.size) / 1000.0, plan.population, kTransit[int(plan.transit)],
+                plan.lines, double(plan.towerFloors), city_.nodes.size(), city_.edges.size(), city_.blocks.size(),
+                w.stationCount,
                 w.lineCount, double(w.data.size()) * 4.0 / (1 << 20), w.trainSlots.size() / 2, w.occupancyCount,
                 agents_.trainCapacity(), city_.districts.size(), kinds[0], kinds[1], kinds[2], kinds[3], kinds[4],
                 w.workByPay[0], w.workByPay[1], w.workByPay[2], city_.buildings.size(), tw.laneCount, tw.queueSize,
@@ -197,7 +206,7 @@ Runner::StepPlan Runner::planSteps(float dt) const {
 // At city scale people and cars are noise: they are hidden halfway through the
 // zoom-out and the active layer fades in around that point, so they never overlap.
 Runner::Layers Runner::chooseLayers() const {
-    const float fullPpm   = float(std::min(a_.fbW, a_.fbH)) / kWorldSize;
+    const float fullPpm   = float(std::min(a_.fbW, a_.fbH)) / a_.worldSize;
     const float zoomedOut = 1.0f - std::clamp((a_.cam.ppm - 1.6f * fullPpm) / (3.4f * fullPpm), 0.0f, 1.0f);
     const float fade      = std::clamp((zoomedOut - 0.35f) / 0.3f, 0.0f, 1.0f);
     Layers      l;
@@ -213,9 +222,9 @@ GLuint Runner::lodStride(uint32_t outdoor, GLuint count, double budgetScale) con
     if (!a_.lod) return 1;
     const float  hw = 0.5f * float(a_.fbW) / a_.cam.ppm;
     const float  hh = 0.5f * float(a_.fbH) / a_.cam.ppm;
-    const float  w = std::max(0.0f, std::min(a_.cam.cx + hw, kWorldSize) - std::max(a_.cam.cx - hw, 0.0f));
-    const float  h = std::max(0.0f, std::min(a_.cam.cy + hh, kWorldSize) - std::max(a_.cam.cy - hh, 0.0f));
-    const double visible = double(outdoor) * double(w) * double(h) / double(kWorldSize * kWorldSize);
+    const float  w = std::max(0.0f, std::min(a_.cam.cx + hw, a_.worldSize) - std::max(a_.cam.cx - hw, 0.0f));
+    const float  h = std::max(0.0f, std::min(a_.cam.cy + hh, a_.worldSize) - std::max(a_.cam.cy - hh, 0.0f));
+    const double visible = double(outdoor) * double(w) * double(h) / double(a_.worldSize) * double(a_.worldSize);
     const double budget  = budgetScale * kCoverage * double(a_.fbW) * double(a_.fbH) / double(a_.pointSize * a_.pointSize);
     GLuint       s       = 1;
     while (visible / s > budget && s < count) s <<= 1;

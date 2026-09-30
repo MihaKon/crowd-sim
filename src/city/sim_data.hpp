@@ -9,8 +9,6 @@
 constexpr float kTrainSpeed   = 16.7f;  // m/s
 constexpr float kRailDwell    = 30.0f;  // s
 constexpr float kTransferTime = 240.0f; // s
-constexpr float kLoopHeadway  = 180.0f; // s, ring and cross-town lines
-constexpr float kLineHeadway  = 240.0f; // s, radial lines
 
 // Offsets of the tables inside SimWorld::data (in uints). Indices come from gpu_layout.h (shared with GLSL).
 enum Section : int {
@@ -19,7 +17,7 @@ enum Section : int {
     kSecAdj          = SEC_ADJ,           // CSR neighbours; top bit set: the street to it is an arterial
     kSecBlocks       = SEC_BLOCKS,        // 4 per block: anchor node, nearest station, shop block, type
     kSecPick         = SEC_PICK,          // residential block ids, then workplaces by pay: low, mid, high
-                                          // (weighted by repetition: bigger employers appear more often)
+                                          // (weighted by repetition: blocks with more floor area appear more often)
     kSecRailPts      = SEC_RAIL_PTS,      // 4 per point: x, y, arc length (float bits), 0
     kSecLineInfo     = SEC_LINE_INFO,     // 4 per line: first point, point count, loop, total length (float bits)
     kSecStationInfo  = SEC_STATION_INFO,  // 4 per station: node, x, y (float bits), 0
